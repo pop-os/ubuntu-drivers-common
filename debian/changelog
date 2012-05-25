@@ -1,3 +1,28 @@
+ubuntu-drivers-common (1:0.2.48) quantal; urgency=low
+
+  * ubuntu-drivers: Fix duplicate system modalias debug messages.
+  * UbuntuDrivers/detect.py: Disable two debug messages which cause excessive
+    debug log spew and are not very interesting.
+  * ubuntu-drivers autoinstall: Do not reinstall already installed drivers.
+  * Add detect-plugins/open-vm-dkms.py: Custom detect plugin for the
+    open-vm-dkms special case (formerly handled by Jockeys' vmware-client.py
+    handler).
+  * setup.py: Install detect-plugins/*.
+  * tests/ubuntu_drivers.py: Add PluginsTest to check that shipped plugins
+    work without errors or crashes.
+  * UbuntuDrivers/detect.py, _check_video_abi_compat(): Disable NVidia driver
+    if X.org's log shows that the Intel driver is loaded. This prevents
+    breaking hybrid systems as long as the NVidia driver and X.org do not work
+    on those.
+  * debian/ubuntu-drivers-common.templates: Drop trailing whitespace, to stop
+    lintian from complaining.
+  * debian/control: Add missing ${misc:Depends} to transitional package.
+  * debian/control: Add missing ${shlibs:Depends} for hybrid-detect.
+  * debian/control: Set priority of the nividia-common transitional package to
+    "extra" to quiesce lintian.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Fri, 25 May 2012 13:58:21 +0200
+
 ubuntu-drivers-common (1:0.2.47) quantal; urgency=low
 
   * UbuntuDrivers/detect.py, system_modaliases(): Catch/log IOErrors when

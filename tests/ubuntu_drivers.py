@@ -29,6 +29,7 @@ import testarchive
 import logging
 
 TEST_DIR = os.path.abspath(os.path.dirname(__file__))
+ROOT_DIR = os.path.dirname(TEST_DIR)
 
 # show aptdaemon log in test output?
 APTDAEMON_LOG = False
@@ -37,6 +38,8 @@ APTDAEMON_DEBUG = False
 
 dbus_address = None
 
+# Do not look at /var/log/Xorg.0.log for the hybrid checks
+os.environ['UBUNTU_DRIVERS_XORG_LOG'] = '/nonexisting'
 
 def gen_fakesys():
     '''Generate a fake SysFS object for testing'''
@@ -360,6 +363,29 @@ class DetectTest(unittest.TestCase):
 
         self.assertEqual(UbuntuDrivers.detect.system_driver_packages(), ['coreutils'])
 
+    def test_system_driver_packages_hybrid(self):
+        '''system_driver_packages() on hybrid Intel/NVidia systems'''
+
+        chroot = aptdaemon.test.Chroot()
+        try:
+            chroot.setup()
+            chroot.add_test_repository()
+            archive = gen_fakearchive()
+            chroot.add_repository(archive.path, True, False)
+            cache = apt.Cache(rootdir=chroot.path)
+
+            xorg_log = os.path.join(chroot.path, 'Xorg.0.log')
+            os.environ['UBUNTU_DRIVERS_XORG_LOG'] = xorg_log
+
+            with open(xorg_log, 'w') as f:
+                f.write('X.Org X Server 1.11.3\n[     5.547] (II) LoadModule: "extmod"\n[     5.560] (II) Loading /usr/lib/xorg/modules/drivers/intel_drv.so\n')
+
+            self.assertEqual(set(UbuntuDrivers.detect.system_driver_packages(cache)),
+                             set(['chocolate', 'vanilla']))
+        finally:
+            os.environ['UBUNTU_DRIVERS_XORG_LOG'] = '/nonexisting'
+            chroot.remove()
+
     def test_auto_install_filter(self):
         '''auto_install_filter()'''
 
@@ -447,14 +473,15 @@ class ToolTest(unittest.TestCase):
 
         klass.chroot_apt_conf = os.path.join(klass.chroot.path, 'aptconfig')
         with open(klass.chroot_apt_conf, 'w') as f:
-            f.write('''Dir "%s";
+            f.write('''Dir "%(root)s";
+Dir::State::status "%(root)s/var/lib/dpkg/status";
 Debug::NoLocking "true";
-DPKG::options:: "--root=%s --log=%s/var/log/dpkg.log";
+DPKG::options:: "--root=%(root)s --log=%(root)s/var/log/dpkg.log";
 APT::Get::AllowUnauthenticated "true";
-''' % (klass.chroot.path, klass.chroot.path, klass.chroot.path))
+''' % {'root': klass.chroot.path})
         os.environ['APT_CONFIG'] = klass.chroot_apt_conf
 
-        klass.tool_path = os.path.join(os.path.dirname(TEST_DIR), 'ubuntu-drivers')
+        klass.tool_path = os.path.join(ROOT_DIR, 'ubuntu-drivers')
 
         # no custom detection plugins by default
         klass.plugin_dir = os.path.join(klass.chroot.path, 'detect')
@@ -536,6 +563,16 @@ APT::Get::AllowUnauthenticated "true";
         self.assertFalse('nvidia' in out, out)
         self.assertEqual(ud.returncode, 0)
 
+        # now all packages should be installed, so it should not do anything
+        ud = subprocess.Popen([self.tool_path, 'autoinstall'],
+                universal_newlines=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+        out, err = ud.communicate()
+        self.assertEqual(err, '')
+        self.assertFalse('bcmwl-kernel-source' in out, out)
+        self.assertTrue('already installed' in out, out)
+        self.assertEqual(ud.returncode, 0)
+
     def test_auto_install_system(self):
         '''ubuntu-drivers autoinstall for fake sysfs and system apt'''
 
@@ -549,6 +586,25 @@ APT::Get::AllowUnauthenticated "true";
         self.assertEqual(err, '')
         # real system packages should not match our fake modalises
         self.assertTrue('No drivers found' in out)
+        self.assertEqual(ud.returncode, 0)
+
+class PluginsTest(unittest.TestCase):
+    '''Test detect-plugins/*'''
+
+    def test_plugin_errors(self):
+        '''shipped plugins work without errors or crashes'''
+
+        env = os.environ.copy()
+        env['UBUNTU_DRIVERS_DETECT_DIR'] = os.path.join(ROOT_DIR, 'detect-plugins')
+
+        ud = subprocess.Popen([os.path.join(ROOT_DIR, 'ubuntu-drivers'), 'debug'],
+                universal_newlines=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=env)
+        out, err = ud.communicate()
+        self.assertEqual(err, '')
+        # real system packages should not match our fake modalises
+        self.assertFalse('ERROR' in out, out)
+        self.assertFalse('Traceback' in out, out)
         self.assertEqual(ud.returncode, 0)
 
 if __name__ == '__main__':

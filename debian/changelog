@@ -1,3 +1,16 @@
+ubuntu-drivers-common (1:0.2.52) quantal; urgency=low
+
+  * ubuntu-drivers: Add --package-list option to create a file with the list
+    of installed packages in "autoinstall" mode.
+  * Add ubiquity/target-config/31ubuntu_driver_packages: Ubiquity plugin to
+    install all packages that "ubuntu-drivers autoinstall" installed into the
+    live system. Install it in setup.py.
+  * ubuntu-drivers: Stop meddling with the debconf environment variables. It
+    is wrong (and too late anyway for Ubiquity) to do it here. The complete
+    environment setting is now done in Ubiquity's simple-plugins.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Tue, 29 May 2012 16:00:21 +0200
+
 ubuntu-drivers-common (1:0.2.51) quantal; urgency=low
 
   * detect-plugins/sl-modem.py: Do not log an exception when

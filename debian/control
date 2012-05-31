@@ -4,6 +4,7 @@ Priority: optional
 Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
 Build-Depends: debhelper (>= 7.0.50~),
  po-debconf,
+ dh-apport,
  python (>= 2.6),
  python-setuptools,
  libpciaccess-dev (>= 0.12.1-2),
@@ -34,17 +35,46 @@ Depends: ${python:Depends},
  pciutils,
  python-apt,
  python-xkit,
- python-packagekit,
- python-aptdaemon.pkcompat | packagekit,
  alsa-utils
+Suggests: python-packagekit
 Replaces: nvidia-common (<< 1:0.2.46)
 Conflicts: nvidia-common (<< 1:0.2.46), packagekit-backend-aptcc
 Provides: nvidia-common
-XB-Python-Version: ${python:Versions}
+Enhances: python-aptdaemon.pkcompat, packagekit
 Description: Detect and install additional Ubuntu driver packages
- This package will find obsolete NVIDIA drivers in use,
- detect the hardware and recommend the most appropriate
- driver.
+ This package aggregates and abstracts Ubuntu specific logic and knowledge
+ about third-party driver packages. It provides:
+ .
+  - a Python API for detecting driver packages for a particular piece of
+    hardware or the whole system.
+ .
+  - an "ubuntu-drivers" command line tool to list or install driver packages
+    (mostly for integration in installers).
+ .
+  - a PackageKit plugin for WhatProvides() for types MODALIAS and
+    HARDWARE_DRIVER, to do the same queries as above through the PackageKit API
+    (for using in non-distro specific GUIs). This also works with aptdaemon's
+    PackageKit compatibility layer (python-aptdaemon.pkcompat).
+ .
+  - some NVidia specific support code to find the most appropriate driver
+    version, as well as setting up the alternatives symlinks that the
+    proprietary NVidia and FGLRX packages use.
+
+Package: dh-modaliases
+Architecture: all
+Depends: ${perl:Depends},
+ ${misc:Depends}
+Enhances: debhelper
+Description: debhelper extension for scanning kernel module aliases
+ dh_modaliases is useful for packages that ship third-party kernel modules,
+ either in binary form, or as sources (with e. g. DKMS). It extracts the
+ modules' modaliases from either the compile .ko files themselves (for packages
+ which ship them in compiled form, using modinfo), or from a package file
+ debian/packagename.modaliases.
+ .
+ This enables software which is looking for missing driver packages (such as
+ Jockey or the operating system installer) to identify which package(s) will
+ provide a driver for a piece of hardware, identified by its modalias.
  
 Package: nvidia-common
 Section: oldlibs

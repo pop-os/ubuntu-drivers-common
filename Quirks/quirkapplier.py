@@ -26,8 +26,8 @@ import logging
 import xkit.xutils
 import xkit.xorgparser
 
-import quirkreader
-import quirkinfo
+import Quirks.quirkreader
+import Quirks.quirkinfo
 
 class QuirkChecker:
     def __init__(self, handler, path='/usr/share/jockey/quirks'):
@@ -55,12 +55,12 @@ class QuirkChecker:
     def get_quirks_from_file(self, quirk_file):
         '''check all the files in a directory looking for quirks'''
         # read other blacklist files (which we will not touch, but evaluate)
-        quirk_file = quirkreader.ReadQuirk(quirk_file)
+        quirk_file = Quirks.quirkreader.ReadQuirk(quirk_file)
         return quirk_file.get_quirks()
 
     def get_system_info(self):
         '''Get system info for the quirk'''
-        quirk_info = quirkinfo.QuirkInfo()
+        quirk_info = Quirks.quirkinfo.QuirkInfo()
         return quirk_info.get_dmi_info()
 
     def matches_tags(self, quirk):

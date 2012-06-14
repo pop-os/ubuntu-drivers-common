@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # -*- coding: utf-8 -*-
 # (c) 2012 Canonical Ltd.
 #
@@ -20,7 +20,7 @@
 
 import xkit.xutils
 import xkit.xorgparser
-import quirkinfo
+import Quirks.quirkinfo
 
 import tempfile
 import os
@@ -31,7 +31,7 @@ class Quirk:
         self.id = id
         self.handler = handler
         self.x_snippet = x_snippet
-        self.match_tags = {}.fromkeys(quirkinfo.dmi_keys, '')
+        self.match_tags = {}.fromkeys(Quirks.quirkinfo.dmi_keys, '')
 
 class ReadQuirk:
 

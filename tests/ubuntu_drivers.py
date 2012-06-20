@@ -308,21 +308,23 @@ class DetectTest(unittest.TestCase):
         del os.environ['SYSFS']
         res = UbuntuDrivers.detect.system_modaliases()
         self.assertGreater(len(res), 5)
-        self.assertTrue(':' in res[0])
+        self.assertTrue(':' in list(res)[0])
 
     def test_system_modalises_fake(self):
         '''system_modaliases() for fake sysfs'''
 
-        res = set(UbuntuDrivers.detect.system_modaliases())
-        self.assertEqual(res, set(['pci:v00001234d00sv00000001sd00bc00sc00i00',
+        res = UbuntuDrivers.detect.system_modaliases()
+        self.assertEqual(set(res), set(['pci:v00001234d00sv00000001sd00bc00sc00i00',
             'pci:vDEADBEEFd00', 'usb:v9876dABCDsv01sd02bc00sc01i05',
             'pci:nvidia']))
+        self.assertEqual(res['pci:vDEADBEEFd00'], 
+                os.path.join(self.sys.sysfs, 'devices/grey'))
 
     def test_system_driver_packages_system(self):
         '''system_driver_packages() for current system'''
 
         # nothing should match the devices in our fake sysfs
-        self.assertEqual(UbuntuDrivers.detect.system_driver_packages(), [])
+        self.assertEqual(UbuntuDrivers.detect.system_driver_packages(), {})
 
     def test_system_driver_packages_performance(self):
         '''system_driver_packages() performance for a lot of modaliases'''
@@ -350,10 +352,16 @@ class DetectTest(unittest.TestCase):
             archive = gen_fakearchive()
             chroot.add_repository(archive.path, True, False)
             cache = apt.Cache(rootdir=chroot.path)
-            self.assertEqual(set(UbuntuDrivers.detect.system_driver_packages(cache)),
-                             set(['chocolate', 'vanilla', 'nvidia-current']))
+            res = UbuntuDrivers.detect.system_driver_packages(cache)
         finally:
             chroot.remove()
+        self.assertEqual(set(res), set(['chocolate', 'vanilla', 'nvidia-current']))
+        self.assertEqual(res['vanilla']['modalias'], 'pci:v00001234d00sv00000001sd00bc00sc00i00')
+        self.assertTrue(res['vanilla']['syspath'].endswith('/devices/white'))
+        self.assertFalse(res['vanilla']['from_distro'])
+        self.assertTrue(res['vanilla']['free'])
+        self.assertTrue(res['chocolate']['syspath'].endswith('/devices/black'))
+        self.assertEqual(res['nvidia-current']['modalias'], 'pci:nvidia')
 
     def test_system_driver_packages_detect_plugins(self):
         '''system_driver_packages() includes custom detection plugins'''
@@ -361,7 +369,8 @@ class DetectTest(unittest.TestCase):
         with open(os.path.join(self.plugin_dir, 'extra.py'), 'w') as f:
             f.write('def detect(apt): return ["coreutils", "no_such_package"]\n')
 
-        self.assertEqual(UbuntuDrivers.detect.system_driver_packages(), ['coreutils'])
+        self.assertEqual(UbuntuDrivers.detect.system_driver_packages(), 
+                {'coreutils': {'free': True, 'from_distro': True}})
 
     def test_system_driver_packages_hybrid(self):
         '''system_driver_packages() on hybrid Intel/NVidia systems'''
@@ -393,7 +402,7 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(set(UbuntuDrivers.detect.auto_install_filter([
             'nvidia-current', 'bcmwl-kernel-source', 'fglrx-updates',
             'pvr-omap4-egl'])), 
-            set(['bcmwl-kernel-source', 'pvr-omap4-egl']))
+            set(['bcmwl-kernel-source', 'pvr-omap4-egl', 'nvidia-current']))
 
     def test_detect_plugin_packages(self):
         '''detect_plugin_packages()'''
@@ -499,8 +508,10 @@ APT::Get::AllowUnauthenticated "true";
             pass
 
         # some tests install this package
-        subprocess.check_call(['apt-get', 'purge', '-y', 'bcmwl-kernel-source'],
+        apt = subprocess.Popen(['apt-get', 'purge', '-y', 'bcmwl-kernel-source'],
                 stdout=subprocess.PIPE)
+        apt.communicate()
+        self.assertEqual(apt.returncode, 0)
 
     def test_list_chroot(self):
         '''ubuntu-drivers list for fake sysfs and chroot'''
@@ -559,7 +570,6 @@ APT::Get::AllowUnauthenticated "true";
         self.assertTrue('bcmwl-kernel-source' in out, out)
         self.assertFalse('vanilla' in out, out)
         self.assertFalse('noalias' in out, out)
-        self.assertFalse('nvidia' in out, out)
         self.assertEqual(ud.returncode, 0)
 
         # now all packages should be installed, so it should not do anything
@@ -602,6 +612,29 @@ APT::Get::AllowUnauthenticated "true";
         # real system packages should not match our fake modalises
         self.assertTrue('No drivers found' in out)
         self.assertEqual(ud.returncode, 0)
+
+    def test_debug(self):
+        '''ubuntu-drivers debug'''
+
+        os.mkdir(self.plugin_dir)
+        self.addCleanup(shutil.rmtree, self.plugin_dir)
+
+        with open(os.path.join(self.plugin_dir, 'special.py'), 'w') as f:
+            f.write('def detect(apt): return ["special", "special-uninst", "special-unavail"]\n')
+
+        ud = subprocess.Popen([self.tool_path, 'debug'],
+                universal_newlines=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+        out, err = ud.communicate()
+        self.assertEqual(err, '', err)
+        self.assertEqual(ud.returncode, 0)
+        # shows messages from detection/plugins
+        self.assertTrue('special-uninst is incompatible' in out, out)
+        self.assertTrue('unavailable package special-unavail' in out, out)
+        # shows modaliases
+        self.assertTrue('pci:nvidia' in out, out)
+        # driver packages
+        self.assertTrue('available: 1 (auto-install)  [third party]  free  modalias:' in out, out)
 
 class PluginsTest(unittest.TestCase):
     '''Test detect-plugins/*'''

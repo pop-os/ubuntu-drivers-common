@@ -17,14 +17,15 @@ import apt
 system_architecture = apt.apt_pkg.get_architectures()[0]
 
 def system_modaliases():
-    '''Return list of modaliases present in the system.
+    '''Get modaliases present in the system.
 
     This ignores devices whose drivers are statically built into the kernel, as
     you cannot replace them with other driver packages anyway.
 
-    The returned list is suitable for a PackageKit WhatProvides(MODALIAS) call.
+    Return a modalias → sysfs path map. The keys of the returned map are
+    suitable for a PackageKit WhatProvides(MODALIAS) call.
     '''
-    aliases = set()
+    aliases = {}
     # $SYSFS is compatible with libudev
     sysfs_dir = os.environ.get('SYSFS', '/sys')
     for path, dirs, files in os.walk(os.path.join(sysfs_dir, 'devices')):
@@ -60,11 +61,9 @@ def system_modaliases():
             #logging.debug('system_modaliases(): ignoring device %s which has no module (built into kernel)', path)
             continue
 
-        aliases.add(modalias)
+        aliases[modalias] = path
 
-    # Convert result to a list, to make the result compatible with a PackageKit
-    # WhatProvides() call.
-    return list(aliases)
+    return aliases
 
 def _check_video_abi_compat(apt_cache, record):
     xorg_video_abi = None
@@ -178,6 +177,25 @@ def packages_for_modalias(apt_cache, modalias):
 
 packages_for_modalias.cache_maps = {}
 
+def _is_package_free(pkg):
+    assert pkg.candidate is not None
+    # it would be better to check the actual license, as we do not have
+    # the component for third-party packages; but this is the best we can do
+    # at the moment
+    if pkg.candidate.section.startswith('restricted') or \
+            pkg.candidate.section.startswith('multiverse'):
+        return False
+    return True
+
+def _is_package_from_distro(pkg):
+    if pkg.candidate is None:
+        return False
+
+    for o in pkg.candidate.origins:
+        if o.origin == 'Ubuntu':
+            return True
+    return False
+
 def system_driver_packages(apt_cache=None):
     '''Get driver packages that are available for the system.
     
@@ -189,19 +207,43 @@ def system_driver_packages(apt_cache=None):
     argument for efficiency. If not given, this function creates a temporary
     one by itself.
 
-    Return a list of package names.
+    Return a dictionary which maps package names to information about them:
+
+      driver_package → {'modalias': 'pci:...', ...}
+
+    Available information keys are:
+      'modalias':    Modalias for the device that needs this driver (not for
+                     drivers from detect plugins)
+      'syspath':     sysfs directory for the device that needs this driver
+                     (not for drivers from detect plugins)
+      'free':        Boolean flag whether driver is free, i. e. in the "main"
+                     or "universe" component.
+      'from_distro': Boolean flag whether the driver is shipped by the distro;
+                     if not, it comes from a (potentially less tested/trusted)
+                     third party source.
     '''
     modaliases = system_modaliases()
 
     if not apt_cache:
         apt_cache = apt.Cache()
 
-    packages = []
-    for alias in modaliases:
-        packages.extend([p.name for p in packages_for_modalias(apt_cache, alias)])
+    packages = {}
+    for alias, syspath in modaliases.items():
+        for p in packages_for_modalias(apt_cache, alias):
+            packages[p.name] = {
+                    'modalias': alias,
+                    'syspath': syspath,
+                    'free': _is_package_free(p),
+                    'from_distro': _is_package_from_distro(p),
+                }
     
     # add available packages which need custom detection code
-    packages.extend(detect_plugin_packages(apt_cache))
+    for p in detect_plugin_packages(apt_cache):
+        apt_p = apt_cache[p]
+        packages[p] = {
+                'free': _is_package_free(apt_p),
+                'from_distro': _is_package_from_distro(apt_p),
+            }
 
     return packages
 
@@ -215,7 +257,7 @@ def auto_install_filter(packages):
     KMS).
     '''
     # any package which matches any of those globs will be accepted
-    whitelist = ['bcmwl*', 'pvr-omap*', 'virtualbox-guest*']
+    whitelist = ['bcmwl*', 'pvr-omap*', 'virtualbox-guest*', 'nvidia-*']
     result = []
     for pattern in whitelist:
         result.extend(fnmatch.filter(packages, pattern))

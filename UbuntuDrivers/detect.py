@@ -12,6 +12,7 @@ import os
 import logging
 import fnmatch
 import subprocess
+import functools
 
 import apt
 
@@ -254,6 +255,8 @@ def system_driver_packages(apt_cache=None):
                      drivers from detect plugins)
       'syspath':     sysfs directory for the device that needs this driver
                      (not for drivers from detect plugins)
+      'plugin':      Name of plugin that detected this package (only for
+                     drivers from detect plugins)
       'free':        Boolean flag whether driver is free, i. e. in the "main"
                      or "universe" component.
       'from_distro': Boolean flag whether the driver is shipped by the distro;
@@ -261,6 +264,9 @@ def system_driver_packages(apt_cache=None):
                      third party source.
       'vendor':      Human readable vendor name, if available.
       'model':       Human readable product name, if available.
+      'recommended': Some drivers (nvidia, fglrx) come in multiple variants and
+                     versions; these have this flag, where exactly one has
+                     recommended == True, and all others False.
     '''
     modaliases = system_modaliases()
 
@@ -281,16 +287,101 @@ def system_driver_packages(apt_cache=None):
                 packages[p.name]['vendor'] = vendor
             if model is not None:
                 packages[p.name]['model'] = model
-    
+
+    # Add "recommended" flags for NVidia alternatives
+    nvidia_packages = [p for p in packages if p.startswith('nvidia-')]
+    if nvidia_packages:
+        nvidia_packages.sort(key=functools.cmp_to_key(_cmp_gfx_alternatives))
+        recommended = nvidia_packages[-1]
+        for p in nvidia_packages:
+            packages[p]['recommended'] = (p == recommended)
+
+    # Add "recommended" flags for fglrx alternatives
+    fglrx_packages = [p for p in packages if p.startswith('fglrx-')]
+    if fglrx_packages:
+        fglrx_packages.sort(key=functools.cmp_to_key(_cmp_gfx_alternatives))
+        recommended = fglrx_packages[-1]
+        for p in fglrx_packages:
+            packages[p]['recommended'] = (p == recommended)
+
     # add available packages which need custom detection code
-    for p in detect_plugin_packages(apt_cache):
-        apt_p = apt_cache[p]
-        packages[p] = {
-                'free': _is_package_free(apt_p),
-                'from_distro': _is_package_from_distro(apt_p),
-            }
+    for plugin, pkgs in detect_plugin_packages(apt_cache).items():
+        for p in pkgs:
+            apt_p = apt_cache[p]
+            packages[p] = {
+                    'free': _is_package_free(apt_p),
+                    'from_distro': _is_package_from_distro(apt_p),
+                    'plugin': plugin,
+                }
 
     return packages
+
+def system_device_drivers(apt_cache=None):
+    '''Get by-device driver packages that are available for the system.
+    
+    This calls system_modaliases() to determine the system's hardware and then
+    queries apt about which packages provide drivers for each of those. It also
+    adds available packages from detect_plugin_packages(), using the name of
+    the detction plugin as device name.
+
+    If you already have an apt.Cache() object, you should pass it as an
+    argument for efficiency. If not given, this function creates a temporary
+    one by itself.
+
+    Return a dictionary which maps devices to available drivers:
+
+      device_name →  {'modalias': 'pci:...', <device info>, 
+                      'drivers': {'pkgname': {<driver package info>}}
+
+    A key (device name) is either the sysfs path (for drivers detected through
+    modaliases) or the detect plugin name (without the full path).
+
+    Available keys in <device info>:
+      'modalias':    Modalias for the device that needs this driver (not for
+                     drivers from detect plugins)
+      'vendor':      Human readable vendor name, if available.
+      'model':       Human readable product name, if available.
+      'drivers':     Driver package map for this device, see below. Installing any
+                     of the drivers in that map will make this particular
+                     device work. The keys are the package names of the driver
+                     packages; note that this can be an already installed
+                     default package such as xserver-xorg-video-nouveau which
+                     provides a free alternative to the proprietary NVidia
+                     driver; these will have the 'builtin' flag set.
+
+    Aavailable keys in <driver package info>:
+      'builtin':     The package is shipped by default in Ubuntu and MUST
+                     NOT be uninstalled. This usually applies to free
+                     drivers like xserver-xorg-video-nouveau.
+      'free':        Boolean flag whether driver is free, i. e. in the "main"
+                     or "universe" component.
+      'from_distro': Boolean flag whether the driver is shipped by the distro;
+                     if not, it comes from a (potentially less tested/trusted)
+                     third party source.
+      'recommended': Some drivers (nvidia, fglrx) come in multiple variants and
+                     versions; these have this flag, where exactly one has
+                     recommended == True, and all others False.
+    '''
+    result = {}
+
+    # copy the system_driver_packages() structure into the by-device structure
+    for pkg, pkginfo in system_driver_packages(apt_cache).items():
+        if 'syspath' in pkginfo:
+            device_name = pkginfo['syspath']
+        else:
+            device_name = pkginfo['plugin']
+        result.setdefault(device_name, {})
+        for opt_key in ('modalias', 'vendor', 'model'):
+            if opt_key in pkginfo:
+                result[device_name][opt_key] = pkginfo[opt_key]
+        drivers = result[device_name].setdefault('drivers', {})
+        drivers[pkg] ={'free': pkginfo['free'], 'from_distro': pkginfo['from_distro']}
+        if 'recommended' in pkginfo:
+            drivers[pkg]['recommended'] = pkginfo['recommended']
+ 
+    _add_builtins(result)
+ 
+    return result
 
 def auto_install_filter(packages):
     '''Get packages which are appropriate for automatic installation.
@@ -303,9 +394,14 @@ def auto_install_filter(packages):
     '''
     # any package which matches any of those globs will be accepted
     whitelist = ['bcmwl*', 'pvr-omap*', 'virtualbox-guest*', 'nvidia-*']
-    result = []
+    allow = []
     for pattern in whitelist:
-        result.extend(fnmatch.filter(packages, pattern))
+        allow.extend(fnmatch.filter(packages, pattern))
+
+    result = {}
+    for p in allow:
+        if 'recommended' not in packages[p] or packages[p]['recommended']:
+            result[p] = packages[p]
     return result
 
 def detect_plugin_packages(apt_cache=None):
@@ -320,22 +416,23 @@ def detect_plugin_packages(apt_cache=None):
 
     If you already have an existing apt.Cache() object, you can pass it as an
     argument for efficiency.
+
+    Return pluginname -> [package, ...] map.
     '''
+    packages = {}
     plugindir = os.environ.get('UBUNTU_DRIVERS_DETECT_DIR',
             '/usr/share/ubuntu-drivers-common/detect/')
     if not os.path.isdir(plugindir):
         logging.debug('Custom detection plugin directory %s does not exist', plugindir)
-        return []
-
-    packages = []
+        return packages
 
     if apt_cache is None:
         apt_cache = apt.Cache()
 
-    for f in os.listdir(plugindir):
-        if not f.endswith('.py'):
+    for fname in os.listdir(plugindir):
+        if not fname.endswith('.py'):
             continue
-        plugin = os.path.join(plugindir, f)
+        plugin = os.path.join(plugindir, fname)
         logging.debug('Loading custom detection plugin %s', plugin)
 
         symb = {}
@@ -357,9 +454,48 @@ def detect_plugin_packages(apt_cache=None):
             for pkg in result:
                 if pkg in apt_cache and apt_cache[pkg].candidate:
                     if _check_video_abi_compat(apt_cache, apt_cache[pkg].candidate.record):
-                        packages.append(pkg)
+                        packages.setdefault(fname, []).append(pkg)
                 else:
                     logging.debug('Ignoring unavailable package %s from plugin %s', pkg, plugin)
 
     return packages
+
+def _cmp_gfx_alternatives(x, y):
+    '''Compare two graphics driver names in terms of preference.
+
+    -updates always sort after non-updates, as we prefer the stable driver and
+    only want to offer -updates when the one from release does not support the
+    card.
+    '''
+    if x.endswith('-updates') and not y.endswith('-updates'):
+        return -1
+    if not x.endswith('-updates') and y.endswith('-updates'):
+        return 1
+    if x < y:
+        return -1
+    if x > y:
+        return 1
+    assert x == y
+    return 0
+
+def _add_builtins(drivers):
+    '''Add builtin driver alternatives'''
+
+    for device, info in drivers.items():
+        for pkg in info['drivers']:
+            # Nouveau is still not good enough, keep recommending the
+            # proprietary driver
+            if pkg.startswith('nvidia'):
+                info['drivers']['xserver-xorg-video-nouveau'] = {
+                    'free': True, 'builtin': True, 'from_distro': True, 'recommended': False}
+                break
+
+            # These days the free driver is working well enough, so recommend
+            # it
+            if pkg.startswith('fglrx'):
+                for d in info['drivers']:
+                    info['drivers'][d]['recommended'] = False
+                info['drivers']['xserver-xorg-video-ati'] = {
+                    'free': True, 'builtin': True, 'from_distro': True, 'recommended': True}
+                break
 

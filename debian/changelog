@@ -1,3 +1,10 @@
+ubuntu-drivers-common (1:0.2.71.1) quantal-proposed; urgency=low
+
+  * NvidiaDetector/nvidiadetector.py:
+    - Make sure to never recommend experimental drivers (LP: #1070795).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Wed, 24 Oct 2012 16:42:19 +0200
+
 ubuntu-drivers-common (1:0.2.71) quantal; urgency=low
 
   * tests/ubuntu_drivers.py: When calling PackageKit, retry up to 5 seconds on

@@ -420,6 +420,34 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(res['nvidia-34']['modalias'], 'pci:nvidia')
         self.assertEqual(res['nvidia-34']['recommended'], False)
 
+    def test_system_driver_packages_bad_encoding(self):
+        '''system_driver_packages() with badly encoded Packages index'''
+
+        chroot = aptdaemon.test.Chroot()
+        try:
+            chroot.setup()
+            chroot.add_test_repository()
+            archive = gen_fakearchive()
+
+            # add a package entry with a broken encoding
+            with open(os.path.join(archive.path, 'Packages'), 'ab') as f:
+                f.write(b'''
+Package: broken
+Architecture: all
+Priority: optional
+Version: 1
+Maintainer: Test A\xEBB User <test@example.com>
+Filename: ./vanilla_1_all.deb
+Description: broken \xEB encoding
+''')
+            chroot.add_repository(archive.path, True, False)
+            cache = apt.Cache(rootdir=chroot.path)
+            res = UbuntuDrivers.detect.system_driver_packages(cache)
+        finally:
+            chroot.remove()
+
+        self.assertEqual(set(res), set(['chocolate', 'vanilla', 'nvidia-current']))
+
     def test_system_driver_packages_detect_plugins(self):
         '''system_driver_packages() includes custom detection plugins'''
 
@@ -770,7 +798,7 @@ APT::Get::AllowUnauthenticated "true";
 
         # only look at the part after special.py
         special_off = out.find('== special.py ==')
-        self.assertGreater(special_off, 0, out)
+        self.assertGreaterEqual(special_off, 0, out)
         out = out[special_off:]
         self.assertTrue('picky - third-party free' in out, out)
         self.assertTrue('special - third-party free' in out, out)

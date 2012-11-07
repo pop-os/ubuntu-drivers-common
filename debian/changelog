@@ -1,3 +1,23 @@
+ubuntu-drivers-common (1:0.2.72) raring; urgency=low
+
+  [ Matthias Klose ]
+  * Build-depend on python3-all.
+
+  [ Dmitrijs Ledkovs ]
+  * Use /usr/bin/python3 shebang.
+
+  [ Martin Pitt ]
+  * debian/tests/system: Fix duplicate output of error message for test
+    failures.
+  * tests/ubuntu_drivers.py, test_devices_detect_plugins(): Fix failure if
+    special.py occurs first in the output. This bug was triggered by Python
+    3.3's new hash randomization behaviour. (LP: #1071997)
+  * UbuntuDrivers/detect.py: Fix UnicodeDecodeError crash when encountering a
+    package with invalid UTF-8 encoding. Just skip those packages instead. Add
+    test to tests/ubuntu_drivers.py.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Wed, 07 Nov 2012 15:47:19 +0100
+
 ubuntu-drivers-common (1:0.2.71.1) quantal-proposed; urgency=low
 
   * NvidiaDetector/nvidiadetector.py:

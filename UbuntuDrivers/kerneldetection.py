@@ -54,8 +54,9 @@ class KernelDetection(object):
         process.communicate()
         return not process.returncode
 
-    def get_linux_headers_metapackage(self):
-        '''Get the linux headers for the newest_kernel installed'''
+    def _get_linux_metapackage(self, headers):
+        '''Get the linux headers or linux metapackage'''
+        suffix = headers and '-headers' or ''
         pattern = re.compile('linux-image-(.+)-([0-9]+)-(.+)')
         source_pattern = re.compile('linux-(.+)')
 
@@ -81,7 +82,7 @@ class KernelDetection(object):
                         version = current_version
                         match_source = source_pattern.match(source)
                         # Set the linux-headers metapackage
-                        if match_source:
+                        if '-lts-' in source and match_source:
                             # This is the case of packages such as
                             # linux-image-3.5.0-18-generic which
                             # comes from linux-lts-quantal.
@@ -90,12 +91,22 @@ class KernelDetection(object):
                             # we should use
                             # linux-headers-generic-lts-quantal
                             # instead
-                            metapackage = 'linux-headers-%s-%s' % (
+                            metapackage = 'linux%s-%s-%s' % (
+                                           suffix,
                                            match.group(3),
                                            match_source.group(1))
                         else:
                             # The scheme linux-headers-$flavour works
                             # well here
-                            metapackage = 'linux-headers-%s' % (
+                            metapackage = 'linux%s-%s' % (
+                                           suffix,
                                            match.group(3))
         return metapackage
+
+    def get_linux_headers_metapackage(self):
+        '''Get the linux headers for the newest_kernel installed'''
+        return self._get_linux_metapackage(True)
+
+    def get_linux_metapackage(self):
+        '''Get the linux metapackage for the newest_kernel installed'''
+        return self._get_linux_metapackage(False)

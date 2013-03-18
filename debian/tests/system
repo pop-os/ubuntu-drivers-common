@@ -79,18 +79,38 @@ class TestUbuntuDrivers(unittest.TestCase):
         self.do_test_driver('pci:v000014E4d00004353sv00sd01bc02sc80i00',
                 'bcmwl-kernel-source', 'wl', auto_install=True)
 
-    def test_nvidia_current(self):
-        '''nvidia-current'''
+    def test_nvidia_304(self):
+        '''nvidia-304'''
 
         # we have two matches here, only install nvidia-current, not -updates
         self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
-                'nvidia-current', 'nvidia_current', auto_install=False)
+                'nvidia-304', 'nvidia_304', auto_install=False)
 
-    def test_nvidia_current_updates(self):
-        '''nvidia-current-updates'''
+    def test_nvidia_304_updates(self):
+        '''nvidia-304-updates'''
 
         self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
-                'nvidia-current-updates', 'nvidia_current_updates', auto_install=False)
+                'nvidia-304-updates', 'nvidia_304_updates', auto_install=False)
+
+    def test_nvidia_310(self):
+        '''nvidia-310'''
+
+        # we have two matches here, only install nvidia-current, not -updates
+        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
+                'nvidia-310', 'nvidia_310', auto_install=False)
+
+    def test_nvidia_310_updates(self):
+        '''nvidia-310-updates'''
+
+        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
+                'nvidia-310-updates', 'nvidia_310_updates', auto_install=False)
+
+    def test_nvidia_313_updates(self):
+        '''nvidia-313-updates'''
+
+        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
+                'nvidia-313-updates', 'nvidia_313_updates', auto_install=False)
+
 
     def test_fglrx(self):
         '''fglrx'''
@@ -110,18 +130,13 @@ class TestUbuntuDrivers(unittest.TestCase):
 
         self.do_test_driver(None, 'virtualbox-dkms', 'vboxdrv', auto_install=False)
 
-    def test_sl_modem(self):
-        '''sl-modem-dkms'''
-
-        self.do_test_driver(None, 'sl-modem-dkms', 'slusb', auto_install=False)
-
     def do_test_driver(self, alias, package, module, auto_install=True):
         if alias:
             self.sys.add('pci', 'mydev', {'modalias': alias})
 
             # detection works
             o = program_out_success(['ubuntu-drivers', 'list'], self)
-            self.assertTrue(package + '\n' in o)
+            self.assertTrue(package + '\n' in o, o)
 
         try:
             if auto_install:

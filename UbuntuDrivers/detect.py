@@ -30,9 +30,7 @@ def system_modaliases():
     suitable for a PackageKit WhatProvides(MODALIAS) call.
     '''
     aliases = {}
-    # $SYSFS_PATH is compatible with libudev
-    sysfs_dir = os.environ.get('SYSFS_PATH', '/sys')
-    for path, dirs, files in os.walk(os.path.join(sysfs_dir, 'devices')):
+    for path, dirs, files in os.walk('/sys/devices'):
         modalias = None
 
         # most devices have modalias files
@@ -246,32 +244,22 @@ def _get_db_name(syspath, alias):
 
     Values are None if unknown.
     '''
-    # ensure syspath is a device name relative to the sysfs dir
-    syspath = syspath[syspath.index('/devices/'):]
-
-    # check if we have an udev helper for this
-    command = '/lib/udev/%s-db' % alias.split(':')[0]
-    if not os.path.exists(command):
-        logging.debug('_get_db_name(%s, %s): No program %s, cannot identify',
-                      syspath, alias, command)
+    try:
+        out = subprocess.check_output(['udevadm', 'hwdb', '--test=' + alias],
+                                      universal_newlines=True)
+    except (OSError, subprocess.CalledProcessError) as e:
+        logging.debug('_get_db_name(%s, %s): udevadm hwdb failed: %s', syspath, alias, str(e))
         return (None, None)
 
-    # call udev ID helper
-    udev_db = subprocess.Popen([command, syspath], stdout=subprocess.PIPE,
-                               stderr = subprocess.PIPE, universal_newlines=True)
-    (out, err) = udev_db.communicate()
-    if udev_db.returncode != 0:
-        logging.debug('_get_db_name(%s, %s): %s failed with %i:\n%s', syspath,
-                      alias, command, udev_db.returncode, err)
-        return (None, None)
+    logging.debug('_get_db_name: output\n%s\n', out)
 
     vendor = None
     model = None
     for line in out.splitlines():
         (k, v) = line.split('=', 1)
-        if k == 'ID_VENDOR_FROM_DATABASE':
+        if '_VENDOR' in k:
             vendor = v
-        if k == 'ID_MODEL_FROM_DATABASE':
+        if '_MODEL' in k:
             model = v
 
     logging.debug('_get_db_name(%s, %s): vendor "%s", model "%s"', syspath,

@@ -18,6 +18,7 @@ import logging
 
 from gi.repository import GLib
 from gi.repository import PackageKitGlib
+from gi.repository import UMockdev
 import apt
 import aptdaemon.test
 import aptdaemon.pkcompat
@@ -26,7 +27,6 @@ import UbuntuDrivers.detect
 import UbuntuDrivers.PackageKit
 import UbuntuDrivers.kerneldetection
 
-import fakesysfs
 import testarchive
 
 TEST_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -42,24 +42,24 @@ dbus_address = None
 # Do not look at /var/log/Xorg.0.log for the hybrid checks
 os.environ['UBUNTU_DRIVERS_XORG_LOG'] = '/nonexisting'
 
-def gen_fakesys():
-    '''Generate a fake SysFS object for testing'''
+# modalias of an nvidia card covered by our nvidia-* packages
+modalias_nv = 'pci:v000010DEd000010C3sv00003842sd00002670bc03sc03i00'
 
-    s = fakesysfs.SysFS()
+def gen_fakehw():
+    '''Generate an UMockdev.Testbed object for testing'''
+
+    t = UMockdev.Testbed.new()
     # covered by vanilla.deb
-    s.add('pci', 'white', {'modalias': 'pci:v00001234d00sv00000001sd00bc00sc00i00'})
+    t.add_device('pci', 'white', None, ['modalias', 'pci:v00001234d00sv00000001sd00bc00sc00i00'], [])
     # covered by chocolate.deb
-    s.add('usb', 'black', {'modalias': 'usb:v9876dABCDsv01sd02bc00sc01i05'})
-    # covered by nvidia-{current,old}.deb
-    s.add('pci', 'graphics', {'modalias': 'pci:nvidia',
-                              'vendor': '0x10DE',
-                              'device': '0x10C3',
-                             })
+    t.add_device('usb', 'black', None, ['modalias', 'usb:v9876dABCDsv01sd02bc00sc01i05'], [])
+    # covered by nvidia-*.deb
+    t.add_device('pci', 'graphics', None, ['modalias', modalias_nv], [])
     # not covered by any driver package
-    s.add('pci', 'grey', {'modalias': 'pci:vDEADBEEFd00'})
-    s.add('ssb', 'yellow', {}, {'MODALIAS': 'pci:vDEADBEEFd00'})
+    t.add_device('pci', 'grey', None, ['modalias', 'pci:vDEADBEEFd00'], [])
+    t.add_device('ssb', 'yellow', None, [], ['MODALIAS', 'pci:vDEADBEEFd00'])
 
-    return s
+    return t
 
 def gen_fakearchive():
     '''Generate a fake archive for testing'''
@@ -75,9 +75,9 @@ def gen_fakearchive():
     a.create_deb('xserver-xorg-core', version='99:1',  # higher than system installed one
             dependencies={'Provides': 'xorg-video-abi-4'})
     a.create_deb('nvidia-current', dependencies={'Depends': 'xorg-video-abi-4'},
-                 extra_tags={'Modaliases': 'nv(pci:nvidia, pci:v000010DEd000010C3sv00sd01bc03sc00i00)'})
+                 extra_tags={'Modaliases': 'nv(pci:v000010DEd000010C3sv*sd*bc03sc*i*, pci:v000010DEd000010C4sv*sd*bc03sc*i*,)'})
     a.create_deb('nvidia-old', dependencies={'Depends': 'xorg-video-abi-3'},
-                 extra_tags={'Modaliases': 'nv(pci:nvidia, pci:v000010DEd000010C3sv00sd01bc03sc00i00)'})
+                 extra_tags={'Modaliases': 'nv(pci:v000010DEd000010C3sv*sd*bc03sc*i*, pci:v000010DEd000010C2sv*sd*bc03sc*i*,)'})
 
     # packages not covered by modalises, for testing detection plugins
     a.create_deb('special')
@@ -91,8 +91,7 @@ class PackageKitTest(aptdaemon.test.AptDaemonTestCase):
 
     @classmethod
     def setUpClass(klass):
-        klass.sys = gen_fakesys()
-        os.environ['SYSFS_PATH'] = klass.sys.sysfs
+        klass.umockdev = gen_fakehw()
 
         # find plugin in our source tree
         os.environ['PYTHONPATH'] = '%s:%s' % (os.getcwd(), os.environ.get('PYTHONPATH', ''))
@@ -307,25 +306,20 @@ class DetectTest(unittest.TestCase):
     def setUp(self):
         '''Create a fake sysfs'''
 
-        self.sys = gen_fakesys()
-        os.environ['SYSFS_PATH'] = self.sys.sysfs
+        self.umockdev = gen_fakehw()
 
         # no custom detection plugins by default
         self.plugin_dir = tempfile.mkdtemp()
         os.environ['UBUNTU_DRIVERS_DETECT_DIR'] = self.plugin_dir
 
     def tearDown(self):
-        try:
-            del os.environ['SYSFS_PATH']
-        except KeyError:
-            pass
         shutil.rmtree(self.plugin_dir)
 
     @unittest.skipUnless(os.path.isdir('/sys/devices'), 'no /sys dir on this system')
     def test_system_modaliases_system(self):
         '''system_modaliases() for current system'''
 
-        del os.environ['SYSFS_PATH']
+        del self.umockdev
         res = UbuntuDrivers.detect.system_modaliases()
         self.assertGreater(len(res), 5)
         self.assertTrue(':' in list(res)[0])
@@ -336,23 +330,16 @@ class DetectTest(unittest.TestCase):
         res = UbuntuDrivers.detect.system_modaliases()
         self.assertEqual(set(res), set(['pci:v00001234d00sv00000001sd00bc00sc00i00',
             'pci:vDEADBEEFd00', 'usb:v9876dABCDsv01sd02bc00sc01i05',
-            'pci:nvidia']))
-        self.assertEqual(res['pci:vDEADBEEFd00'], 
-                os.path.join(self.sys.sysfs, 'devices/grey'))
-
-    def test_system_driver_packages_system(self):
-        '''system_driver_packages() for current system'''
-
-        # nothing should match the devices in our fake sysfs
-        self.assertEqual(UbuntuDrivers.detect.system_driver_packages(), {})
+            modalias_nv]))
+        self.assertEqual(res['pci:vDEADBEEFd00'], '/sys/devices/grey')
 
     def test_system_driver_packages_performance(self):
         '''system_driver_packages() performance for a lot of modaliases'''
 
         # add lots of fake devices/modalises
         for i in range(30):
-            self.sys.add('pci', 'pcidev%i' % i, {'modalias': 'pci:s%04X' % i})
-            self.sys.add('usb', 'usbdev%i' % i, {'modalias': 'usb:s%04X' % i})
+            self.umockdev.add_device('pci', 'pcidev%i' % i, None, ['modalias', 'pci:s%04X' % i], [])
+            self.umockdev.add_device('usb', 'usbdev%i' % i, None, ['modalias', 'usb:s%04X' % i], [])
 
         start = resource.getrusage(resource.RUSAGE_SELF)
         UbuntuDrivers.detect.system_driver_packages()
@@ -372,14 +359,14 @@ class DetectTest(unittest.TestCase):
             archive = gen_fakearchive()
             # older applicable driver which is not the recommended one
             archive.create_deb('nvidia-123', dependencies={'Depends': 'xorg-video-abi-4'},
-                               extra_tags={'Modaliases': 'nv(pci:nvidia, pci:v000010DEd000010C3sv00sd01bc03sc00i00)'})
+                               extra_tags={'Modaliases': 'nv(pci:v000010DEd000010C3sv*sd*bc03sc*i*)'})
             # -updates driver which also should not be recommended
             archive.create_deb('nvidia-current-updates', dependencies={'Depends': 'xorg-video-abi-4'},
-                               extra_tags={'Modaliases': 'nv(pci:nvidia, pci:v000010DEd000010C3sv00sd01bc03sc00i00)'})
+                               extra_tags={'Modaliases': 'nv(pci:v000010DEd000010C3sv*sd*bc03sc*i*)'})
             # driver package which supports multiple ABIs
             archive.create_deb('nvidia-34',
                                dependencies={'Depends': 'xorg-video-abi-3 | xorg-video-abi-4'},
-                               extra_tags={'Modaliases': 'nv(pci:nvidia, pci:v000010DEd000010C3sv00sd01bc03sc00i00)'})
+                               extra_tags={'Modaliases': 'nv(pci:v000010DEd000010C3sv*sd*bc03sc*i*)'})
             chroot.add_repository(archive.path, True, False)
             cache = apt.Cache(rootdir=chroot.path)
             res = UbuntuDrivers.detect.system_driver_packages(cache)
@@ -401,24 +388,24 @@ class DetectTest(unittest.TestCase):
         self.assertFalse('model' in res['chocolate'])
         self.assertFalse('recommended' in res['chocolate'])
 
-        self.assertEqual(res['nvidia-current']['modalias'], 'pci:nvidia')
+        self.assertEqual(res['nvidia-current']['modalias'], modalias_nv)
         self.assertTrue('nvidia' in res['nvidia-current']['vendor'].lower(),
                         res['nvidia-current']['vendor'])
         self.assertTrue('GeForce' in res['nvidia-current']['model'],
                         res['nvidia-current']['model'])
         self.assertEqual(res['nvidia-current']['recommended'], True)
 
-        self.assertEqual(res['nvidia-123']['modalias'], 'pci:nvidia')
+        self.assertEqual(res['nvidia-123']['modalias'], modalias_nv)
         self.assertTrue('nvidia' in res['nvidia-123']['vendor'].lower(),
                         res['nvidia-123']['vendor'])
         self.assertTrue('GeForce' in res['nvidia-123']['model'],
                         res['nvidia-123']['model'])
         self.assertEqual(res['nvidia-123']['recommended'], False)
 
-        self.assertEqual(res['nvidia-current-updates']['modalias'], 'pci:nvidia')
+        self.assertEqual(res['nvidia-current-updates']['modalias'], modalias_nv)
         self.assertEqual(res['nvidia-current-updates']['recommended'], False)
 
-        self.assertEqual(res['nvidia-34']['modalias'], 'pci:nvidia')
+        self.assertEqual(res['nvidia-34']['modalias'], modalias_nv)
         self.assertEqual(res['nvidia-34']['recommended'], False)
 
     def test_system_driver_packages_bad_encoding(self):
@@ -455,8 +442,9 @@ Description: broken \xEB encoding
         with open(os.path.join(self.plugin_dir, 'extra.py'), 'w') as f:
             f.write('def detect(apt): return ["coreutils", "no_such_package"]\n')
 
-        self.assertEqual(UbuntuDrivers.detect.system_driver_packages(), 
-                         {'coreutils': {'free': True, 'from_distro': True, 'plugin': 'extra.py'}})
+        res = UbuntuDrivers.detect.system_driver_packages() 
+        self.assertTrue('coreutils' in res, list(res.keys()))
+        self.assertEqual(res['coreutils'], {'free': True, 'from_distro': True, 'plugin': 'extra.py'})
 
     def test_system_driver_packages_hybrid(self):
         '''system_driver_packages() on hybrid Intel/NVidia systems'''
@@ -481,12 +469,6 @@ Description: broken \xEB encoding
             os.environ['UBUNTU_DRIVERS_XORG_LOG'] = '/nonexisting'
             chroot.remove()
 
-    def test_system_device_drivers_system(self):
-        '''system_device_drivers() for current system'''
-
-        # nothing should match the devices in our fake sysfs
-        self.assertEqual(UbuntuDrivers.detect.system_device_drivers(), {})
-
     def test_system_device_drivers_chroot(self):
         '''system_device_drivers() for test package repository'''
 
@@ -497,23 +479,23 @@ Description: broken \xEB encoding
             archive = gen_fakearchive()
             # older applicable driver which is not the recommended one
             archive.create_deb('nvidia-123', dependencies={'Depends': 'xorg-video-abi-4'},
-                               extra_tags={'Modaliases': 'nv(pci:nvidia, pci:v000010DEd000010C3sv00sd01bc03sc00i00)'})
+                               extra_tags={'Modaliases': 'nv(pci:v000010DEd000010C3sv*sd*bc03sc*i*)'})
             # -updates driver which also should not be recommended
             archive.create_deb('nvidia-current-updates', dependencies={'Depends': 'xorg-video-abi-4'},
-                               extra_tags={'Modaliases': 'nv(pci:nvidia, pci:v000010DEd000010C3sv00sd01bc03sc00i00)'})
+                               extra_tags={'Modaliases': 'nv(pci:v000010DEd000010C3sv*sd*bc03sc*i*)'})
 
             # -experimental driver which also should not be recommended
             archive.create_deb('nvidia-experimental', dependencies={'Depends': 'xorg-video-abi-4'},
-                               extra_tags={'Modaliases': 'nv(pci:nvidia, pci:v000010DEd000010C3sv00sd01bc03sc00i00)'})
+                               extra_tags={'Modaliases': 'nv(pci:v000010DEd000010C3sv*sd*bc03sc*i*)'})
             chroot.add_repository(archive.path, True, False)
             cache = apt.Cache(rootdir=chroot.path)
             res = UbuntuDrivers.detect.system_device_drivers(cache)
         finally:
             chroot.remove()
 
-        white = '%s/devices/white' % self.sys.sysfs
-        black = '%s/devices/black' % self.sys.sysfs
-        graphics = '%s/devices/graphics' % self.sys.sysfs
+        white = '/sys/devices/white'
+        black = '/sys/devices/black'
+        graphics = '/sys/devices/graphics'
         self.assertEqual(len(res), 3)  # the three devices above
 
         self.assertEqual(res[white], 
@@ -526,7 +508,7 @@ Description: broken \xEB encoding
                           'drivers': {'chocolate': {'free': True, 'from_distro': False}}
                          })
 
-        self.assertEqual(res[graphics]['modalias'], 'pci:nvidia')
+        self.assertEqual(res[graphics]['modalias'], modalias_nv)
         self.assertTrue('nvidia' in res[graphics]['vendor'].lower())
         self.assertTrue('GeForce' in res[graphics]['model'])
 
@@ -551,8 +533,9 @@ Description: broken \xEB encoding
             f.write('def detect(apt): return ["coreutils", "no_such_package"]\n')
 
         res = UbuntuDrivers.detect.system_device_drivers()
-        self.assertEqual(res, {'extra.py': {
-            'drivers': {'coreutils': {'free': True, 'from_distro': True}}}})
+        self.assertTrue('extra.py' in res, list(res.keys()))
+        self.assertEqual(res['extra.py'],
+                         {'drivers': {'coreutils': {'free': True, 'from_distro': True}}})
 
     def test_system_device_drivers_manual_install(self):
         '''system_device_drivers() for a manually installed nvidia driver'''
@@ -583,8 +566,8 @@ exec /sbin/modinfo "$@"
             chroot.remove()
             os.environ['PATH'] = orig_path
 
-        graphics = '%s/devices/graphics' % self.sys.sysfs
-        self.assertEqual(res[graphics]['modalias'], 'pci:nvidia')
+        graphics = '/sys/devices/graphics'
+        self.assertEqual(res[graphics]['modalias'], modalias_nv)
         self.assertTrue(res[graphics]['manual_install'])
 
         # should still show the drivers
@@ -625,13 +608,13 @@ exec /sbin/modinfo "$@"
             self.assertEqual(UbuntuDrivers.detect.detect_plugin_packages(cache), {})
 
             self._gen_detect_plugins()
-            # suppress logging the deliberatey errors in our test plugins to
+            # suppress logging the deliberate errors in our test plugins to
             # stderr
             logging.getLogger().setLevel(logging.CRITICAL)
             self.assertEqual(UbuntuDrivers.detect.detect_plugin_packages(cache), 
                              {'special.py': ['special']})
 
-            os.mkdir(os.path.join(self.sys.sysfs, 'pickyon'))
+            os.mkdir(os.path.join(self.umockdev.get_sys_dir(), 'pickyon'))
             self.assertEqual(UbuntuDrivers.detect.detect_plugin_packages(cache), 
                              {'special.py': ['special'], 'picky.py': ['picky']})
         finally:
@@ -661,7 +644,7 @@ exec /sbin/modinfo "$@"
             f.write('''import os, os.path
             
 def detect(apt): 
-    if os.path.exists(os.path.join(os.environ.get("SYSFS_PATH", "/sys"), "pickyon")):
+    if os.path.exists("/sys/pickyon"):
         return ["picky"]
 ''')
 
@@ -791,15 +774,9 @@ APT::Get::AllowUnauthenticated "true";
     def setUp(self):
         '''Create a fake sysfs'''
 
-        self.sys = gen_fakesys()
-        os.environ['SYSFS_PATH'] = self.sys.sysfs
+        self.umockdev = gen_fakehw()
 
     def tearDown(self):
-        try:
-            del os.environ['SYSFS_PATH']
-        except KeyError:
-            pass
-
         # some tests install this package
         apt = subprocess.Popen(['apt-get', 'purge', '-y', 'bcmwl-kernel-source'],
                 stdout=subprocess.PIPE)
@@ -979,7 +956,7 @@ APT::Get::AllowUnauthenticated "true";
         self.assertTrue('special-uninst is incompatible' in out, out)
         self.assertTrue('unavailable package special-unavail' in out, out)
         # shows modaliases
-        self.assertTrue('pci:nvidia' in out, out)
+        self.assertTrue(modalias_nv in out, out)
         # driver packages
         self.assertTrue('available: 1 (auto-install)  [third party]  free  modalias:' in out, out)
 
@@ -1008,18 +985,13 @@ class KernelDectionTest(unittest.TestCase):
     def setUp(self):
         '''Create a fake sysfs'''
 
-        self.sys = gen_fakesys()
-        os.environ['SYSFS_PATH'] = self.sys.sysfs
+        self.umockdev = gen_fakehw()
 
         # no custom detection plugins by default
         self.plugin_dir = tempfile.mkdtemp()
         os.environ['UBUNTU_DRIVERS_DETECT_DIR'] = self.plugin_dir
 
     def tearDown(self):
-        try:
-            del os.environ['SYSFS_PATH']
-        except KeyError:
-            pass
         shutil.rmtree(self.plugin_dir)
 
     def test_linux_headers_detection_chroot(self):
@@ -1721,4 +1693,8 @@ class KernelDectionTest(unittest.TestCase):
             chroot.remove()
 
 if __name__ == '__main__':
+    if 'umockdev' not in os.environ.get('LD_PRELOAD', ''):
+        sys.stderr.write('This test suite needs to be run under umockdev-wrapper\n')
+        sys.exit(1)
+
     unittest.main()

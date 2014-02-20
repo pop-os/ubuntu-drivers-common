@@ -1,3 +1,18 @@
+ubuntu-drivers-common (1:0.2.88) trusty; urgency=medium
+
+  * debian/tests/control: Add missing linux-headers test dependency.
+  * Drop python3-aptdaemon.pkcompat recommends to a suggests, to avoid pulling
+    it into Kubuntu.
+  * share/hybrid/gpu-manager.c:
+    - Add the new gpu manager. This will replace hybrid-detect as soon as
+      test coverage is complete.
+  * tests/ubuntu_drivers.py:
+    - Skip test_list_system() and test_devices_system() for now. We need
+      to find a way to pass syspath without the whole APT_CONFIG env var,
+      or the tests will fail if system packages match real system hardware.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Thu, 20 Feb 2014 17:13:36 +0100
+
 ubuntu-drivers-common (1:0.2.87) trusty; urgency=low
 
   * tests/ubuntu_drivers.py: Reduce the expected system modaliases from > 5 to

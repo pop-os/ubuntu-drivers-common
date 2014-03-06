@@ -46,6 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <pciaccess.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -72,10 +73,10 @@
       || ((((c) & 0x00ffff00)                                           \
            == ((PCI_CLASS_PROCESSOR << 16) | (PCI_SUBCLASS_PROCESSOR_COPROC << 8)))) )
 
-#define FILENAME_ "/var/lib/ubuntu-drivers-common/last_gfx_boot"
-#define FILENAME "last_gfx_boot"
-
+#define LAST_BOOT "/var/lib/ubuntu-drivers-common/last_gfx_boot"
+#define XORG_CONF "/etc/X11/xorg.conf"
 #define FORCE_LAPTOP "/etc/force-laptop"
+#define KERN_PARAM "nogpumanager"
 
 #define AMD 0x1002
 #define INTEL 0x8086
@@ -87,9 +88,19 @@ static char *log_file = NULL;
 static FILE *log_handle = NULL;
 static char *last_boot_file = NULL;
 static char *xorg_conf_file = NULL;
+static char *amd_pcsdb_file = NULL;
 static int dry_run = 0;
+static int fake_lightdm = 0;
 static char *fake_modules_path = NULL;
 static char *fake_alternatives_path = NULL;
+static char *fake_dmesg_path = NULL;
+static char *prime_settings = NULL;
+static char *bbswitch_path = NULL;
+static char *bbswitch_quirks_path = NULL;
+static char *dmi_product_version_path = NULL;
+static char *main_arch_path = NULL;
+static char *other_arch_path = NULL;
+
 
 static struct pci_slot_match match = {
     PCI_MATCH_ANY, PCI_MATCH_ANY, PCI_MATCH_ANY, PCI_MATCH_ANY, 0
@@ -100,10 +111,230 @@ struct device {
     unsigned int vendor_id;
     unsigned int device_id;
     /* BusID components */
+    unsigned int domain;
     unsigned int bus;
     unsigned int dev;
     unsigned int func;
 };
+
+
+struct alternatives {
+    /* These are just to
+     *  detect the installer
+     */
+    int nvidia_available;
+    int fglrx_available;
+    int mesa_available;
+    int pxpress_available;
+    int prime_available;
+
+    /* The ones that may be enabled */
+    int nvidia_enabled;
+    int fglrx_enabled;
+    int mesa_enabled;
+    int pxpress_enabled;
+    int prime_enabled;
+
+    char *current;
+};
+
+
+/* Case insensitive equivalent of strstr */
+static const char *istrstr(const char *str1, const char *str2)
+{
+    if (!*str2)
+    {
+      return str1;
+    }
+    for (; *str1; ++str1) {
+        /* Look for the 1st character */
+        if (toupper(*str1) == toupper(*str2)) {
+            /* We have a match. Let's loop through the
+             * remaining characters.
+             * chr1 belongs to str1, whereas chr2 belongs to str2.
+             */
+            const char *chr1, *chr2;
+            for (chr1 = str1, chr2 = str2; *chr1 && *chr2; ++chr1, ++chr2) {
+                if (toupper(*chr1) != toupper(*chr2)) {
+                    break;
+                }
+            }
+            /* If we have matched all of str2 and we have arrived
+             * at NULL termination, then we're done.
+             * Let's return str1.
+             */
+            if (!*chr2) {
+                return str1;
+            }
+        }
+    }
+    return NULL;
+}
+
+
+static int exists_not_empty(const char *file) {
+    struct stat stbuf;
+
+    /* If file doesn't exist */
+    if (stat(file, &stbuf) == -1) {
+        fprintf(log_handle, "can't access %s\n", file);
+        return 0;
+    }
+    /* If file is empty */
+    if ((stbuf.st_mode & S_IFMT) && ! stbuf.st_size) {
+        fprintf(log_handle, "%s is empty\n", file);
+        return 0;
+    }
+    return 1;
+}
+
+
+/* Get parameters we may need to pass to bbswitch */
+static char * get_params_from_quirks() {
+    char *dmi_product_version = NULL;
+    FILE *file;
+    char *params = NULL;
+    char line[1035];
+    size_t len = 0;
+    char *tok;
+
+    if (!exists_not_empty(dmi_product_version_path)) {
+        fprintf(log_handle, "Error: %s does not exist or is empty.\n", dmi_product_version_path);
+    }
+
+    if (!exists_not_empty(bbswitch_quirks_path)) {
+        fprintf(log_handle, "Error: %s does not exist or is empty.\n", bbswitch_quirks_path);
+    }
+
+    /* get dmi product version */
+    file = fopen(dmi_product_version_path, "r");
+    if (file == NULL) {
+        fprintf(log_handle, "can't open %s\n", dmi_product_version_path);
+        return NULL;
+    }
+    if (getline(&dmi_product_version, &len, file) == -1) {
+        fprintf(log_handle, "can't get line from %s\n", dmi_product_version_path);
+        return NULL;
+    }
+    fclose(file);
+
+    if (dmi_product_version) {
+        /* Remove newline */
+        len = strlen(dmi_product_version);
+        if(dmi_product_version[len-1] == '\n' )
+           dmi_product_version[len-1] = 0;
+
+        fprintf(log_handle, "dmi_product_version=\"%s\"\n", dmi_product_version);
+
+        file = fopen(bbswitch_quirks_path, "r");
+        if (file == NULL) {
+            fprintf(log_handle, "can't open %s\n", bbswitch_quirks_path);
+            free(dmi_product_version);
+            return NULL;
+        }
+
+        while (fgets(line, sizeof(line), file)) {
+            /* Ignore comments */
+            if (strstr(line, "#") != NULL) {
+                continue;
+            }
+
+            if (istrstr(line, dmi_product_version) != NULL) {
+                fprintf(log_handle, "Found matching quirk\n");
+
+                tok = strtok(line, "\"");
+
+                while (tok != NULL)
+                {
+                    tok = strtok (NULL, "\"");
+                    if (tok && (isspace(tok[0]) == 0)) {
+                        params = strdup(tok);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        fclose(file);
+
+        free(dmi_product_version);
+    }
+
+    return params;
+}
+
+
+static int act_upon_module_with_params(const char *module,
+                                       int mode,
+                                       char *params) {
+    int status = 0;
+    char command[300];
+
+    fprintf(log_handle, "%s %s with \"%s\" parameters\n",
+            mode ? "Loading" : "Unloading",
+            module, params ? params : "no");
+
+    if (params) {
+        sprintf(command, "%s %s %s", mode ? "/sbin/modprobe" : "/sbin/rmmod",
+                module, params);
+        free(params);
+    }
+    else {
+        sprintf(command, "%s %s", mode ? "/sbin/modprobe" : "/sbin/rmmod",
+                module);
+    }
+
+    if (dry_run)
+        return 1;
+
+    status = system(command);
+
+    return (status == 0);
+}
+
+/* Load a kernel module and pass it parameters */
+static int load_module_with_params(const char *module,
+                                   char *params) {
+    return (act_upon_module_with_params(module, 1, params));
+}
+
+
+/* Load a kernel module */
+static int load_module(const char *module) {
+    return (load_module_with_params(module, NULL));
+}
+
+
+/* Unload a kernel module */
+static int unload_module(const char *module) {
+    return (act_upon_module_with_params(module, 0, NULL));
+}
+
+
+/* Load bbswitch and pass some parameters */
+static int load_bbswitch() {
+    char *params = NULL;
+    char *temp_params = NULL;
+    char basic[] = "load_state=-1 unload_state=1";
+
+    temp_params = get_params_from_quirks();
+    if (!temp_params) {
+        params = strdup(basic);
+    }
+    else {
+        params = malloc(strlen(temp_params) + strlen(basic) + 2);
+        if (!params)
+            return 0;
+        strcpy(params, basic);
+        strcat(params, " ");
+        strcat(params, temp_params);
+
+        free(temp_params);
+    }
+
+
+    return (load_module_with_params("bbswitch", params));
+}
 
 
 /* Get the first line of the output of a command */
@@ -119,7 +350,7 @@ char* get_output(char *command) {
     }
 
     if (fgets(temp, sizeof(temp), pfile) != NULL) {
-        output = (char*)malloc(strlen(temp) + 1);
+        output = malloc(strlen(temp) + 1);
         if (!output) {
             pclose(pfile);
             return NULL;
@@ -165,18 +396,38 @@ static char* get_alternative_link(char *arch_path, char *pattern) {
         if (pfile == NULL) {
             fprintf(stderr, "I couldn't open %s for reading.\n",
                     fake_alternatives_path);
-            return 0;
+            return NULL;
         }
         while (fgets(command, sizeof(command), pfile)) {
-            if (strstr(command, pattern) != NULL) {
+            /* Make sure we don't catch prime by mistake when
+             * looking for nvidia
+             */
+            if (strcmp(pattern, "nvidia") == 0) {
+                if (strstr(command, pattern) != NULL) {
+                    alternative = strdup(command);
+                    break;
+                }
+            }
+            else {
+                if (strstr(command, pattern) != NULL) {
                 alternative = strdup(command);
                 break;
+                }
             }
         }
+        fclose(pfile);
     }
     else {
         sprintf(command, "update-alternatives --list %s_gl_conf | grep %s",
                 arch_path, pattern);
+
+        /* Make sure we don't catch prime by mistake when
+         * looking for nvidia
+         */
+        if (strcmp(pattern, "nvidia") == 0) {
+            strcat(command, " | grep -v prime");
+        }
+
         alternative = get_output(command);
     }
 
@@ -184,15 +435,169 @@ static char* get_alternative_link(char *arch_path, char *pattern) {
 }
 
 
-static char * get_current_alternative(char *master_link) {
-    char *alternative = NULL;
-    char command[200];
-    sprintf(command, "/usr/bin/update-alternatives --query %s_gl_conf "
-            "| grep \"Value:\" | sed \"s/Value: //g\"",
-            master_link);
-    alternative = get_output(command);
+/* Look for unloaded modules in dmesg */
+static int has_unloaded_module(char *module) {
+    int status = 0;
+    char command[100];
 
-    return alternative;
+    if (dry_run && fake_dmesg_path) {
+        /* Make sure the file exists and is not empty */
+        if (!exists_not_empty(fake_dmesg_path)) {
+            return 0;
+        }
+
+        sprintf(command, "grep -q \"%s: module\" %s",
+                module, fake_dmesg_path);
+        status = system(command);
+        fprintf(log_handle, "grep fake dmesg status %d\n", status);
+    }
+    else {
+        sprintf(command, "dmesg | grep -q \"%s: module\"",
+                module);
+        status = system(command);
+        fprintf(log_handle, "grep dmesg status %d\n", status);
+    }
+
+    fprintf(log_handle, "dmesg status %d == 0? %s\n", status, (status == 0) ? "Yes" : "No");
+
+    return (status == 0);
+}
+
+
+static int find_string_in_file(const char *path, const char *pattern) {
+    FILE *pfile = NULL;
+    char  *line = NULL;
+    size_t len = 0;
+    size_t read;
+
+    int found = 0;
+
+    pfile = fopen(path, "r");
+    if (pfile == NULL)
+         return found;
+    while ((read = getline(&line, &len, pfile)) != -1) {
+        if (istrstr(line, pattern) != NULL) {
+            found = 1;
+            break;
+        }
+    }
+    fclose(pfile);
+    if (line)
+        free(line);
+
+    return found;
+}
+
+
+/* Check if lightdm is the default login manager */
+static int is_lightdm_default() {
+    if (dry_run)
+        return fake_lightdm;
+
+    return (find_string_in_file("/etc/X11/default-display-manager",
+            "lightdm"));
+}
+
+
+static void detect_available_alternatives(struct alternatives *info, char *pattern) {
+    if (strstr(pattern, "mesa")) {
+        info->mesa_available = 1;
+    }
+    else if (strstr(pattern, "fglrx")) {
+        info->fglrx_available = 1;
+    }
+    else if (strstr(pattern, "pxpress")) {
+        info->pxpress_available = 1;
+    }
+    else if (strstr(pattern, "nvidia")) {
+        if (strstr(pattern, "prime") != NULL) {
+            info->prime_available = 1;
+        }
+        else {
+            info->nvidia_available = 1;
+        }
+    }
+}
+
+static void detect_enabled_alternatives(struct alternatives *info) {
+    if (strstr(info->current, "mesa") != NULL) {
+        info->mesa_enabled = 1;
+    }
+    else if (strstr(info->current, "fglrx") != NULL) {
+        info->fglrx_enabled = 1;
+    }
+    else if (strstr(info->current, "pxpress") != NULL) {
+        info->pxpress_enabled = 1;
+    }
+    else if (strstr(info->current, "nvidia") != NULL) {
+        if (strstr(info->current, "prime") != NULL) {
+            info->prime_enabled = 1;
+        }
+        else {
+            info->nvidia_enabled = 1;
+        }
+    }
+}
+
+
+static int get_alternatives(struct alternatives *info, const char *master_link) {
+    int len;
+    char command[200];
+    char buffer[1035];
+    FILE *pfile = NULL;
+    char *value = NULL;
+    char *other = NULL;
+    const char ch = '/';
+
+    /* Test */
+    if (fake_alternatives_path) {
+        pfile = fopen(fake_alternatives_path, "r");
+        /* Set the enabled alternatives in the struct */
+        detect_enabled_alternatives(info);
+    }
+    else {
+        sprintf(command, "/usr/bin/update-alternatives --query %s_gl_conf", master_link);
+
+        pfile = popen(command, "r");
+        if (pfile == NULL) {
+            fprintf(stderr, "Failed to run command: %s\n", command);
+            return 0;
+        }
+    }
+
+    while (fgets(buffer, sizeof(buffer), pfile) != NULL) {
+        if (strstr(buffer, "Value:")) {
+            value = strchr(buffer, ch);
+            if (value != NULL) {
+                /* If info->current is not NULL, then it's a fake
+                 * alternative, which we won't override
+                 */
+                if (!info->current) {
+                    info->current = strdup(value);
+                    /* Remove newline */
+                    len = strlen(info->current);
+                    if(info->current[len-1] == '\n' )
+                       info->current[len-1] = 0;
+                }
+                /* Set the enabled alternatives in the struct */
+                detect_enabled_alternatives(info);
+            }
+
+        }
+        else if (strstr(buffer, "Alternative:") || fake_alternatives_path) {
+            other = strchr(buffer, ch);
+            if (other != NULL) {
+                /* Set the available alternatives in the struct */
+                detect_available_alternatives(info, other);
+            }
+
+
+        }
+    }
+
+    pclose(pfile);
+
+    return 1;
 }
 
 
@@ -200,7 +605,7 @@ static char * get_current_alternative(char *master_link) {
 static int set_alternative(char *arch_path, char *alternative) {
     int status = -1;
     char command[200];
-    sprintf(command, "update-alternatives --set %s_gl_conf %s",
+    sprintf(command, "/usr/bin/update-alternatives --set %s_gl_conf %s",
             arch_path, alternative);
 
     if (dry_run) {
@@ -208,35 +613,61 @@ static int set_alternative(char *arch_path, char *alternative) {
         fprintf(log_handle, "%s\n", command);
     }
     else {
+        fprintf(log_handle, "%s\n", command);
         status = system(command);
+        fprintf(log_handle, "update-alternatives status %d\n", status);
     }
 
-    if (!status)
+    if (status == -1)
         return 0;
 
     /* call ldconfig */
-    if (dry_run)
+    if (dry_run) {
         fprintf(log_handle, "Calling ldconfig\n");
-    else
-        status = system("ldconfig");
+    }
+    else {
+        fprintf(log_handle, "Calling ldconfig\n");
+        status = system("/sbin/ldconfig");
+        fprintf(log_handle, "ldconfig status %d\n", status);
+    }
 
-    if (!status)
+    if (status == -1)
         return 0;
     return 1;
 }
 
-static int select_driver(char *arch_path, char *driver) {
+static int select_driver(char *driver) {
     int status = 0;
     char *alternative = NULL;
-    alternative = get_alternative_link(arch_path, driver);
+    alternative = get_alternative_link(main_arch_path, driver);
 
     if (alternative == NULL) {
         fprintf(log_handle, "Error: no alternative found for %s\n", driver);
     }
     else {
         /* Set the alternative */
-        status = set_alternative(arch_path, alternative);
-        free(alternative);
+        status = set_alternative(main_arch_path, alternative);
+
+        /* Only for amd64 */
+        if (status && strcmp(main_arch_path, "x86_64-linux-gnu") == 0) {
+            /* Free the alternative */
+            free(alternative);
+            alternative = NULL;
+
+            /* Try to get the alternative for the other architecture */
+            alternative = get_alternative_link(other_arch_path, driver);
+            if (alternative) {
+                /* No need to check its status */
+                set_alternative(other_arch_path, alternative);
+
+                /* Free the alternative */
+                free(alternative);
+            }
+        }
+        else {
+            /* Free the alternative */
+            free(alternative);
+        }
     }
     return status;
 }
@@ -256,6 +687,16 @@ static int is_file_empty(const char *file) {
 }
 
 
+static int has_cmdline_option(const char *option)
+{
+    return (find_string_in_file("/proc/cmdline", option));
+}
+
+
+static int is_disabled_in_cmdline() {
+    return has_cmdline_option(KERN_PARAM);
+}
+
 /* This is just for writing the BusID of the discrete
  * card
  */
@@ -263,6 +704,9 @@ static int write_to_xorg_conf(struct device **devices, int cards_n,
                               unsigned int vendor_id) {
     int i;
     FILE *pfile = NULL;
+
+    fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
+
     pfile = fopen(xorg_conf_file, "w");
     if (pfile == NULL) {
         fprintf(log_handle, "I couldn't open %s for writing.\n",
@@ -276,12 +720,13 @@ static int write_to_xorg_conf(struct device **devices, int cards_n,
             fprintf(pfile,
                "Section \"Device\"\n"
                "    Identifier \"Default Card %d\"\n"
-               "    BusID \"PCI:%x:%x:%x\"\n"
+               "    BusID \"PCI:%d@%d:%d:%d\"\n"
                "EndSection\n\n",
                i,
-               devices[i]->bus,
-               devices[i]->dev,
-               devices[i]->func);
+               (int)(devices[i]->bus),
+               (int)(devices[i]->domain),
+               (int)(devices[i]->dev),
+               (int)(devices[i]->func));
         }
     }
 
@@ -294,6 +739,9 @@ static int write_to_xorg_conf(struct device **devices, int cards_n,
 static int write_pxpress_xorg_conf(struct device **devices, int cards_n) {
     int i;
     FILE *pfile = NULL;
+
+    fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
+
     pfile = fopen(xorg_conf_file, "w");
     if (pfile == NULL) {
         fprintf(log_handle, "I couldn't open %s for writing.\n",
@@ -301,31 +749,58 @@ static int write_pxpress_xorg_conf(struct device **devices, int cards_n) {
         return 0;
     }
 
+    fprintf(pfile,
+            "Section \"ServerLayout\"\n"
+            "    Identifier \"amd-layout\"\n"
+            "    Screen 0 \"amd-screen\" 0 0\n"
+            "EndSection\n\n");
+
     for(i = 0; i < cards_n; i++) {
         if (devices[i]->vendor_id == INTEL) {
             fprintf(pfile,
-               "Section \"Device\"\n"
-               "    Identifier \"Default Card %d\"\n"
-               "    Driver \"intel\"\n"
-               "    Option \"AccelMethod\" \"uxa\"\n"
-               "    BusID \"PCI:%x:%x:%x\"\n"
-               "EndSection\n\n",
-               i,
-               devices[i]->bus,
-               devices[i]->dev,
-               devices[i]->func);
+                "Section \"Device\"\n"
+                "    Identifier \"intel\"\n"
+                "    Driver \"intel\"\n"
+                "    Option \"AccelMethod\" \"uxa\"\n"
+                "    BusID \"PCI:%d@%d:%d:%d\"\n"
+                "EndSection\n\n",
+                (int)(devices[i]->bus),
+                (int)(devices[i]->domain),
+                (int)(devices[i]->dev),
+                (int)(devices[i]->func));
         }
         else if (devices[i]->vendor_id == AMD) {
+            /* FIXME: fglrx doesn't seem to support
+             *        the domain, so we only use
+             *        bus, dev, and func
+             */
             fprintf(pfile,
-               "Section \"Device\"\n"
-               "    Identifier \"Default Card %d\"\n"
-               "    Driver \"fglrx\"\n"
-               "    BusID \"PCI:%x:%x:%x\"\n"
-               "EndSection\n\n",
-               i,
-               devices[i]->bus,
-               devices[i]->dev,
-               devices[i]->func);
+                "Section \"Device\"\n"
+                "    Identifier \"amd-device\"\n"
+                "    Driver \"fglrx\"\n"
+                /*"    BusID \"PCI:%d@%d:%d:%d\"\n" */
+                "    BusID \"PCI:%d:%d:%d\"\n"
+                "EndSection\n\n"
+                "Section \"Monitor\"\n"
+                "    Identifier \"amd-monitor\"\n"
+                "    Option \"VendorName\" \"ATI Proprietary Driver\"\n"
+                "    Option \"ModelName\" \"Generic Autodetecting Monitor\"\n"
+                "    Option \"DPMS\" \"true\"\n"
+                "EndSection\n\n"
+                "Section \"Screen\"\n"
+                "    Identifier \"amd-screen\"\n"
+                "    Device \"amd-device\"\n"
+                "    Monitor \"amd-monitor\"\n"
+                "    DefaultDepth 24\n"
+                "    SubSection \"Display\"\n"
+                "        Viewport   0 0\n"
+                "        Depth     24\n"
+                "    EndSubSection\n"
+                "EndSection\n\n",
+                (int)(devices[i]->bus),
+                /* (int)(devices[i]->domain), */
+                (int)(devices[i]->dev),
+                (int)(devices[i]->func));
         }
     }
 
@@ -333,6 +808,526 @@ static int write_pxpress_xorg_conf(struct device **devices, int cards_n) {
     fclose(pfile);
     return 1;
 }
+
+
+/* Check AMD's configuration file is the discrete GPU
+ * is set to be disabled
+ */
+static int is_pxpress_dgpu_disabled() {
+    int disabled = 0;
+    /* We don't need a huge buffer */
+    char line[100];
+    FILE *file;
+    struct stat stbuf;
+
+    /* If file doesn't exist */
+    if (stat(amd_pcsdb_file, &stbuf) == -1) {
+        fprintf(log_handle, "can't access %s\n", amd_pcsdb_file);
+        return 0;
+    }
+    /* If file is empty */
+    if ((stbuf.st_mode & S_IFMT) && ! stbuf.st_size) {
+        fprintf(log_handle, "%s is empty\n", amd_pcsdb_file);
+        return 0;
+    }
+
+
+    file = fopen(amd_pcsdb_file, "r");
+
+    if (!file) {
+        fprintf(log_handle, "Error: I couldn't open %s for reading.\n",
+                amd_pcsdb_file);
+        return 0;
+    }
+
+
+    while (fgets(line, sizeof(line), file)) {
+        /* This means that a GPU has to be disabled */
+        if (istrstr(line, "PX_GPUDOWN=") != NULL) {
+            disabled = 1;
+            break;
+        }
+    }
+
+    fclose(file);
+
+    return disabled;
+}
+
+
+/* Check xorg.conf to see if it's all properly set */
+static int check_prime_xorg_conf(struct device **devices,
+                                 int cards_n) {
+    int i;
+    int intel_matches = 0;
+    int nvidia_matches = 0;
+    int nvidia_set = 0;
+    int intel_set = 0;
+    int x_options_matches = 0;
+    char line[2048];
+    char intel_bus_id[100];
+    char nvidia_bus_id[100];
+    FILE *file;
+
+
+    if (!exists_not_empty(xorg_conf_file))
+        return 0;
+
+    file = fopen(xorg_conf_file, "r");
+
+    if (!file) {
+        fprintf(log_handle, "Error: I couldn't open %s for reading.\n",
+                xorg_conf_file);
+        return 0;
+    }
+
+    /* Get the BusIDs of each card. Let's be super paranoid about
+     * the ordering on the bus, although there should be no surprises
+     */
+    for (i=0; i < cards_n; i++) {
+        if (devices[i]->vendor_id == INTEL) {
+            sprintf(intel_bus_id, "\"PCI:%d@%d:%d:%d\"",
+                                  (int)(devices[i]->bus),
+                                  (int)(devices[i]->domain),
+                                  (int)(devices[i]->dev),
+                                  (int)(devices[i]->func));
+        }
+        else if (devices[i]->vendor_id == NVIDIA) {
+            sprintf(nvidia_bus_id, "\"PCI:%d@%d:%d:%d\"",
+                                (int)(devices[i]->bus),
+                                (int)(devices[i]->domain),
+                                (int)(devices[i]->dev),
+                                (int)(devices[i]->func));
+        }
+    }
+
+    while (fgets(line, sizeof(line), file)) {
+        /* Ignore comments */
+        if (strstr(line, "#") == NULL) {
+            /* Parse options here */
+            if (istrstr(line, "Option") != NULL) {
+                if (istrstr(line, "UseDisplayDevice") != NULL &&
+                    istrstr(line, "none") != NULL) {
+                    x_options_matches += 1;
+                }
+            }
+            else if (strstr(line, intel_bus_id) != NULL) {
+                intel_matches += 1;
+            }
+            else if (cards_n >1 && strstr(line, nvidia_bus_id) != NULL) {
+                nvidia_matches += 1;
+            }
+            /* The driver has to be either intel or nvidia */
+            else if (istrstr(line, "Driver") != NULL) {
+                if (istrstr(line, "modesetting") != NULL){
+                    intel_set += 1;
+                }
+                else if (istrstr(line, "nvidia") != NULL) {
+                    nvidia_set += 1;
+                }
+            }
+
+        }
+    }
+
+    fclose(file);
+
+    fprintf(log_handle,
+            "intel_matches: %d, nvidia_matches: %d, "
+            "intel_set: %d, nvidia_set: %d "
+            "x_options_matches: %d\n",
+            intel_matches, nvidia_matches,
+            intel_set, nvidia_set,
+            x_options_matches);
+
+    if (cards_n == 1) {
+        /* The module was probably unloaded when
+         * the card was powered down
+         */
+        return (intel_matches == 1 &&
+                intel_set == 1 && nvidia_set == 1 &&
+                x_options_matches > 0);
+    }
+    else {
+        return (intel_matches == 1 && nvidia_matches == 1 &&
+                intel_set == 1 && nvidia_set == 1 &&
+                x_options_matches > 0);
+    }
+}
+
+
+/* Check xorg.conf to see if it's all properly set */
+static int check_pxpress_xorg_conf(struct device **devices,
+                                   int cards_n) {
+    int i;
+    int intel_matches = 0;
+    int amd_matches = 0;
+    int fglrx_set = 0;
+    int intel_set = 0;
+    int x_options_matches = 0;
+    char line[2048];
+    char intel_bus_id[100];
+    char amd_bus_id[100];
+    FILE *file;
+
+
+    if (!exists_not_empty(xorg_conf_file))
+        return 0;
+
+    file = fopen(xorg_conf_file, "r");
+
+    if (!file) {
+        fprintf(log_handle, "Error: I couldn't open %s for reading.\n",
+                xorg_conf_file);
+        return 0;
+    }
+
+    /* Get the BusIDs of each card. Let's be super paranoid about
+     * the ordering on the bus, although there should be no surprises
+     */
+    for (i=0; i < cards_n; i++) {
+        if (devices[i]->vendor_id == INTEL) {
+            sprintf(intel_bus_id, "\"PCI:%d@%d:%d:%d\"",
+                                  (int)(devices[i]->bus),
+                                  (int)(devices[i]->domain),
+                                  (int)(devices[i]->dev),
+                                  (int)(devices[i]->func));
+        }
+        else if (devices[i]->vendor_id == AMD) {
+            /* FIXME: fglrx doesn't seem to support
+             *        the domain, so we only use
+             *        bus, dev, and func
+             */
+            /* sprintf(amd_bus_id, "\"PCI:%d@%d:%d:%d\"", */
+            sprintf(amd_bus_id, "\"PCI:%d:%d:%d\"",
+                                (int)(devices[i]->bus),
+                                /*(int)(devices[i]->domain),*/
+                                (int)(devices[i]->dev),
+                                (int)(devices[i]->func));
+        }
+    }
+
+    while (fgets(line, sizeof(line), file)) {
+        /* Ignore comments */
+        if (strstr(line, "#") == NULL) {
+            /* Parse options here */
+            if (istrstr(line, "Option") != NULL) {
+                if (istrstr(line, "AccelMethod") != NULL &&
+                    istrstr(line, "UXA") != NULL) {
+                    x_options_matches += 1;
+                }
+            }
+            else if (strstr(line, intel_bus_id) != NULL) {
+                intel_matches += 1;
+            }
+            else if (cards_n >1 && strstr(line, amd_bus_id) != NULL) {
+                amd_matches += 1;
+            }
+            /* The driver has to be either intel or fglrx */
+            else if (istrstr(line, "Driver") != NULL) {
+                if (istrstr(line, "intel") != NULL){
+                    intel_set += 1;
+                }
+                else if (istrstr(line, "fglrx") != NULL) {
+                    fglrx_set += 1;
+                }
+            }
+
+        }
+    }
+
+    fclose(file);
+
+    fprintf(log_handle,
+            "intel_matches: %d, amd_matches: %d, "
+            "intel_set: %d, fglrx_set: %d "
+            "x_options_matches: %d\n",
+            intel_matches, amd_matches,
+            intel_set, fglrx_set,
+            x_options_matches);
+
+    if (cards_n == 1) {
+        /* The module was probably unloaded when
+         * the card was powered down
+         */
+        return (intel_matches == 1 &&
+                intel_set == 1 && fglrx_set == 1 &&
+                x_options_matches > 0);
+    }
+    else {
+        return (intel_matches == 1 && amd_matches == 1 &&
+                intel_set == 1 && fglrx_set == 1 &&
+                x_options_matches > 0);
+    }
+}
+
+
+static int check_vendor_bus_id_xorg_conf(struct device **devices, int cards_n,
+                                         unsigned int vendor_id, char *driver) {
+    int failure = 0;
+    int i;
+    int matches = 0;
+    int expected_matches = 0;
+    char line[4096];
+    char bus_id[256];
+    FILE *file;
+    struct stat stbuf;
+
+    /* If file doesn't exist */
+    if (stat(xorg_conf_file, &stbuf) == -1) {
+        fprintf(log_handle, "can't access %s\n", xorg_conf_file);
+        return 0;
+    }
+    /* If file is empty */
+    if ((stbuf.st_mode & S_IFMT) && ! stbuf.st_size) {
+        fprintf(log_handle, "%s is empty\n", xorg_conf_file);
+        return 0;
+    }
+
+
+    file = fopen(xorg_conf_file, "r");
+
+    if (!file) {
+        fprintf(log_handle, "Error: I couldn't open %s for reading.\n",
+                xorg_conf_file);
+        return 0;
+    }
+
+    for (i=0; i < cards_n; i++) {
+    /* BusID \"PCI:%d@%d:%d:%d\" */
+        if (devices[i]->vendor_id == vendor_id)
+            expected_matches += 1;
+    }
+
+    while (fgets(line, sizeof(line), file)) {
+        /* Ignore comments */
+        if (strstr(line, "#") == NULL) {
+            /* If we find a line with the BusId */
+            if (istrstr(line, "BusID") != NULL) {
+                for (i=0; i < cards_n; i++) {
+                    /* BusID \"PCI:%d@%d:%d:%d\" */
+                    if (devices[i]->vendor_id == vendor_id) {
+                        sprintf(bus_id, "\"PCI:%d@%d:%d:%d\"", (int)(devices[i]->bus),
+                                                               (int)(devices[i]->domain),
+                                                               (int)(devices[i]->dev),
+                                                               (int)(devices[i]->func));
+                        if (strstr(line, bus_id) != NULL) {
+                            matches += 1;
+                        }
+                    }
+                }
+            }
+            else if ((istrstr(line, "Driver") != NULL) &&
+                     (strstr(line, driver) == NULL)) {
+                failure = 1;
+            }
+        }
+    }
+
+    fclose(file);
+
+    return (matches == expected_matches && !failure);
+}
+
+
+static int check_all_bus_ids_xorg_conf(struct device **devices, int cards_n) {
+    /* int status = 0;*/
+    int i;
+    int matches = 0;
+    char line[4096];
+    char bus_id[256];
+    FILE *file;
+
+    file = fopen(xorg_conf_file, "r");
+
+    if (!file) {
+        fprintf(log_handle, "Error: I couldn't open %s for reading.\n",
+                xorg_conf_file);
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), file)) {
+        for (i=0; i < cards_n; i++) {
+            /* BusID \"PCI:%d@%d:%d:%d\" */
+            sprintf(bus_id, "\"PCI:%d@%d:%d:%d\"", (int)(devices[i]->bus),
+                                                   (int)(devices[i]->domain),
+                                                   (int)(devices[i]->dev),
+                                                   (int)(devices[i]->func));
+            if (strstr(line, bus_id) != NULL) {
+                matches += 1;
+            }
+        }
+    }
+
+    fclose(file);
+
+    return (matches == cards_n);
+    /* return status; */
+}
+
+
+static int write_prime_xorg_conf(struct device **devices, int cards_n) {
+    int i;
+    FILE *pfile = NULL;
+
+    fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
+
+    pfile = fopen(xorg_conf_file, "w");
+    if (pfile == NULL) {
+        fprintf(log_handle, "I couldn't open %s for writing.\n",
+                xorg_conf_file);
+        return 0;
+    }
+
+    fprintf(pfile,
+            "Section \"ServerLayout\"\n"
+            "    Identifier \"layout\"\n"
+            "    Screen 0 \"nvidia\"\n"
+            "    Inactive \"intel\"\n"
+            "EndSection\n\n");
+
+    for(i = 0; i < cards_n; i++) {
+        if (devices[i]->vendor_id == INTEL) {
+            fprintf(pfile,
+                "Section \"Device\"\n"
+                "    Identifier \"intel\"\n"
+                "    Driver \"modesetting\"\n"
+                "    BusID \"PCI:%d@%d:%d:%d\"\n"
+                "EndSection\n\n"
+                "Section \"Screen\"\n"
+                "    Identifier \"intel\"\n"
+                "    Device \"intel\"\n"
+                "EndSection\n\n",
+               (int)(devices[i]->bus),
+               (int)(devices[i]->domain),
+               (int)(devices[i]->dev),
+               (int)(devices[i]->func));
+        }
+        else if (devices[i]->vendor_id == NVIDIA) {
+            fprintf(pfile,
+                "Section \"Device\"\n"
+                "    Identifier \"nvidia\"\n"
+                "    Driver \"nvidia\"\n"
+                "    BusID \"PCI:%d@%d:%d:%d\"\n"
+                "EndSection\n\n"
+                "Section \"Screen\"\n"
+                "    Identifier \"nvidia\"\n"
+                "    Device \"nvidia\"\n"
+                "    Option \"UseDisplayDevice\" \"none\"\n"
+                "EndSection\n\n",
+               (int)(devices[i]->bus),
+               (int)(devices[i]->domain),
+               (int)(devices[i]->dev),
+               (int)(devices[i]->func));
+        }
+    }
+
+    fflush(pfile);
+    fclose(pfile);
+    return 1;
+}
+
+
+
+/* Open a file and check if it contains "on"
+ * or "off".
+ *
+ * Return 0 if the file doesn't exist or is empty.
+ */
+static int check_on_off(const char *path) {
+    int status = 0;
+    char line[100];
+    FILE *file;
+
+    file = fopen(path, "r");
+
+    if (!file) {
+        fprintf(log_handle, "Error: can't open %s\n", path);
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), file)) {
+        if (istrstr(line, "on") != NULL) {
+            status = 1;
+            break;
+        }
+    }
+
+    fclose(file);
+
+    return status;
+}
+
+
+/* Get the current status for PRIME from bbswitch.
+ *
+ * This tells us whether the discrete card is
+ * on or off.
+ */
+static int prime_is_discrete_nvidia_on() {
+    return (check_on_off(bbswitch_path));
+}
+
+
+/* Get the settings for PRIME.
+ *
+ * This tells us whether the discrete card should be
+ * on or off.
+ */
+static int prime_is_action_on() {
+    return (check_on_off(prime_settings));
+}
+
+
+static int prime_set_discrete(int mode) {
+    FILE *file;
+
+    file = fopen(bbswitch_path, "w");
+    if (!file)
+        return 0;
+
+    fprintf(file, "%s\n", mode ? "ON" : "OFF");
+    fclose(file);
+
+    return 1;
+}
+
+
+/* Power on the NVIDIA discrete card */
+static int prime_enable_discrete() {
+    int status = 0;
+
+    /* Set bbswitch */
+    status = prime_set_discrete(1);
+
+    /* Load the module */
+    if (status)
+        status = load_module("nvidia");
+
+    return status;
+}
+
+
+/* Power off the NVIDIA discrete card */
+static int prime_disable_discrete() {
+    int status = 0;
+
+    /* Tell nvidia-persistenced the nvidia card is about
+     * to be switched off
+     */
+    if (!dry_run)
+        system("/sbin/initctl emit nvidia-off");
+
+    /* Unload the module */
+    status = unload_module("nvidia");
+
+    /* Set bbswitch */
+    if (status)
+        status = prime_set_discrete(0);
+
+    return status;
+}
+
 
 static void get_boot_vga(struct device **devices,
                         int cards_number,
@@ -380,6 +1375,7 @@ static int has_system_changed(struct device **old_devices,
         if ((old_devices[i]->boot_vga != new_devices[i]->boot_vga) ||
             (old_devices[i]->vendor_id != new_devices[i]->vendor_id) ||
             (old_devices[i]->device_id != new_devices[i]->device_id) ||
+            (old_devices[i]->domain != new_devices[i]->domain) ||
             (old_devices[i]->bus != new_devices[i]->bus) ||
             (old_devices[i]->dev != new_devices[i]->dev) ||
             (old_devices[i]->func != new_devices[i]->func)) {
@@ -405,9 +1401,10 @@ static int write_data_to_file(struct device **devices,
     }
 
     for(i = 0; i < cards_number; i++) {
-        fprintf(pfile, "%04x:%04x;%x:%x:%x;%d\n",
+        fprintf(pfile, "%04x:%04x;%04x:%02x:%02x:%d;%d\n",
                 devices[i]->vendor_id,
                 devices[i]->device_id,
+                devices[i]->domain,
                 devices[i]->bus,
                 devices[i]->dev,
                 devices[i]->func,
@@ -422,14 +1419,15 @@ static int write_data_to_file(struct device **devices,
 static int get_vars(FILE *file, struct device **devices, int num) {
     int status;
 
-    devices[num] = (struct device*) malloc(sizeof(struct device));
+    devices[num] = malloc(sizeof(struct device));
 
     if (!devices[num])
         return EOF;
 
-    status = fscanf(file, "%04x:%04x;%x:%x:%x;%d\n",
+    status = fscanf(file, "%04x:%04x;%04x:%02x:%02x:%d;%d\n",
                     &devices[num]->vendor_id,
                     &devices[num]->device_id,
+                    &devices[num]->domain,
                     &devices[num]->bus,
                     &devices[num]->dev,
                     &devices[num]->func,
@@ -446,7 +1444,6 @@ static int read_data_from_file(struct device **devices,
                                int *cards_number,
                                char *filename) {
     /* Read from last boot gfx */
-    int i;
     FILE *pfile = NULL;
     pfile = fopen(filename, "r");
     if (pfile == NULL) {
@@ -459,8 +1456,8 @@ static int read_data_from_file(struct device **devices,
                     filename);
             return 0;
         }
-        fprintf(pfile, "%04x:%04x;%x:%x:%x;%d\n",
-                0, 0, 0, 0, 0, 0);
+        fprintf(pfile, "%04x:%04x;%04x:%02x:%02x:%d;%d\n",
+                0, 0, 0, 0, 0, 0, 0);
         fflush(pfile);
         fclose(pfile);
         /* Try again */
@@ -482,10 +1479,149 @@ static int read_data_from_file(struct device **devices,
 }
 
 
+/* Find pci id in dmesg stream */
+static char * find_pci_pattern(char *line, const char *pattern) {
+    int is_next = 0;
+    char *tok;
+    char *match = NULL;
+
+    tok = strtok(line, " ");
+
+    while (tok != NULL)
+    {
+        tok = strtok (NULL, " ");
+        if (is_next) {
+            if (tok && isdigit(tok[0])) {
+                fprintf(log_handle, "Found %s pci id in dmesg: %s.\n",
+                        pattern, tok);
+                match = strdup(tok);
+                break;
+            }
+            else {
+                break;
+            }
+        }
+        if (tok)
+            is_next = (strcmp(tok, pattern) == 0);
+    }
+
+    return match;
+}
+
+
+/* Parse part of dmesg to extract the PCI BusID */
+static int add_gpu_from_stream(FILE *pfile, const char *pattern, struct device **devices, int *num) {
+    int status = EOF;
+    char line[1035];
+    char *match = NULL;
+
+    if (!pfile) {
+        fprintf(log_handle, "Error: passed invalid stream.\n");
+        return 0;
+    }
+
+    devices[*num] = malloc(sizeof(struct device));
+
+    if (!devices[*num])
+        return 0;
+
+    while (fgets(line, sizeof(line), pfile)) {
+        match = find_pci_pattern(line, pattern);
+        if (match) {
+            /* Extract the data from the string */
+            status = sscanf(match, "%04x:%02x:%02x.%d\n",
+                            &devices[*num]->domain,
+                            &devices[*num]->bus,
+                            &devices[*num]->dev,
+                            &devices[*num]->func);
+            free(match);
+            break;
+        }
+    }
+
+    if (status == EOF) {
+        free(devices[*num]);
+        return 0;
+    }
+
+    if (istrstr(pattern, "nvidia") != NULL) {
+        /* Add fake device and vendor ids */
+        devices[*num]->vendor_id = NVIDIA;
+        devices[*num]->device_id = 0x68d8;
+    }
+    else if (istrstr(pattern, "fglrx") != NULL){
+        /* Add fake device and vendor ids */
+        devices[*num]->vendor_id = AMD;
+        devices[*num]->device_id = 0x68d8;
+    }
+
+    /* Increment number of cards */
+    *num += 1;
+
+    return status;
+}
+
+
+/* Get the PCI BusID from dmesg */
+static int add_gpu_bus_from_dmesg(const char *pattern, struct device **devices,
+                                  int *cards_number) {
+    int status = 0;
+    char command[100];
+    FILE *pfile = NULL;
+
+    if (dry_run && fake_dmesg_path) {
+        struct stat stbuf;
+
+        /* If file doesn't exist */
+        if (stat(fake_dmesg_path, &stbuf) == -1) {
+            fprintf(log_handle, "can't access %s\n", fake_dmesg_path);
+            return 0;
+        }
+        /* If file is empty */
+        if ((stbuf.st_mode & S_IFMT) && ! stbuf.st_size) {
+            fprintf(log_handle, "%s is empty\n", fake_dmesg_path);
+            return 0;
+        }
+
+        sprintf(command, "grep %s %s",
+                pattern, fake_dmesg_path);
+    }
+    else {
+        sprintf(command, "dmesg | grep %s", pattern);
+    }
+
+    pfile = popen(command, "r");
+    if (pfile == NULL) {
+        return 1;
+    }
+
+    /* Extract ID from the stream */
+    status = add_gpu_from_stream(pfile, pattern, devices, cards_number);
+
+    pclose(pfile);
+
+    fprintf(log_handle, "pci bus from dmesg status %d\n", status);
+
+    return status;
+}
+
+
+/* Get the PCI BusID from dmesg */
+static int add_amd_gpu_bus_from_dmesg(struct device **devices,
+                                  int *cards_number) {
+
+    return (add_gpu_bus_from_dmesg("fglrx_pci", devices, cards_number));
+}
+
+static int add_nvidia_gpu_bus_from_dmesg(struct device **devices,
+                                  int *cards_number) {
+    return (add_gpu_bus_from_dmesg("nvidia", devices, cards_number));
+}
+
 static int is_module_loaded(const char *module) {
     int status = 0;
     char line[4096];
-	FILE *file;
+    FILE *file;
     if (!fake_modules_path)
         file = fopen("/proc/modules", "r");
     else
@@ -572,23 +1708,15 @@ static int is_laptop (void) {
 }
 
 
-static int is_alternative_in_use(char *alternative, char *pattern) {
-    /* Avoid getting false positives when looking for nvidia
-     * and finding nvidia-*-prime instead
-     */
-    if ((strcmp(pattern, "nvidia") == 0) &&
-        (strstr(alternative, "prime") != NULL))
-        return 0;
-    return (strstr(alternative, pattern) != NULL);
-}
-
-
-static int move_xorg_conf(void) {
+/* Make a backup and remove xorg.conf */
+static int remove_xorg_conf(void) {
     int status;
     char backup[200];
     char buffer[80];
     time_t rawtime;
     struct tm *info;
+
+    fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
 
     time(&rawtime);
     info = localtime(&rawtime);
@@ -596,18 +1724,303 @@ static int move_xorg_conf(void) {
     strftime(buffer, 80, "%m%d%Y", info);
     sprintf(backup, "%s.%s", xorg_conf_file, buffer);
 
-    fprintf(log_handle, "Moving %s to %s\n", xorg_conf_file, backup);
-
     status = rename(xorg_conf_file, backup);
-    if (!status)
+    if (!status) {
         status = unlink(xorg_conf_file);
         if (!status)
             return 0;
         else
             return 1;
+    }
+    else {
+        fprintf(log_handle, "Moved %s to %s\n", xorg_conf_file, backup);
+    }
+    return 1;
+}
+
+
+static int enable_mesa() {
+    int status = 0;
+    fprintf(log_handle, "Selecting mesa\n");
+    status = select_driver("mesa");
+
+    /* Remove xorg.conf */
+    remove_xorg_conf();
+
+    return status;
+}
+
+
+static int enable_nvidia(struct alternatives *alternative,
+                         unsigned int vendor_id,
+                         struct device **devices,
+                         int cards_n) {
+    int status = 0;
+
+    /* Alternative not in use */
+    if (!alternative->nvidia_enabled) {
+        /* Select nvidia */
+        fprintf(log_handle, "Selecting nvidia\n");
+        status = select_driver("nvidia");
+        /* select_driver(other_arch_path, "nvidia"); */
+    }
+    /* Alternative in use */
+    else {
+        fprintf(log_handle, "Driver is already loaded and enabled\n");
+        status = 1;
+    }
+    /* See if enabling the driver failed */
+    if (status) {
+        /* If xorg.conf exists, make sure it contains
+         * the right BusId and NO NOUVEAU or FGLRX. If it doesn't, create a
+         * xorg.conf from scratch */
+        if (!check_vendor_bus_id_xorg_conf(devices, cards_n,
+                                           vendor_id, "nvidia")) {
+            fprintf(log_handle, "Check failed\n");
+
+            /* Remove xorg.conf */
+            remove_xorg_conf();
+
+            /* Only useful if more than one card is available */
+            if (cards_n > 1) {
+                /* Write xorg.conf */
+                write_to_xorg_conf(devices, cards_n, vendor_id);
+            }
+        }
+        else {
+            fprintf(log_handle, "No need to modify xorg.conf. Path: %s\n", xorg_conf_file);
+        }
+    }
+    else {
+        /* For some reason we failed to select the
+         * driver. Let's select Mesa here */
+        fprintf(log_handle, "Error: failed to enable the driver\n");
+        enable_mesa();
+    }
+
+    return status;
+}
+
+
+static int enable_prime(const char *prime_settings,
+                        int bbswitch_loaded,
+                        unsigned int vendor_id,
+                        struct alternatives *alternative,
+                        struct device **devices,
+                        int cards_n) {
+    int status = 0;
+    int prime_discrete_on = 0;
+    int prime_action_on = 0;
+
+    /* We only support Lightdm at this time */
+    if (!is_lightdm_default()) {
+        fprintf(log_handle, "Lightdm is not the default display "
+                            "manager. Nothing to do\n");
+        return 0;
+    }
+
+    /* Check if prime_settings is available
+     * File doesn't exist or empty
+     */
+    if (!exists_not_empty(prime_settings)) {
+        fprintf(log_handle, "Error: no settings for prime can be found in %s\n",
+                prime_settings);
+        return 0;
+    }
+
+    if (!bbswitch_loaded) {
+        /* Try to load bbswitch */
+        /* opts="`/sbin/get-quirk-options`"
+        /sbin/modprobe bbswitch load_state=-1 unload_state=1 "$opts" || true */
+        status = load_bbswitch();
+        if (!status) {
+            fprintf(log_handle, "Error: can't load bbswitch\n");
+            /* Select mesa as a fallback */
+            enable_mesa();
+
+            /* Remove xorg.conf */
+            remove_xorg_conf();
+            return 0;
+        }
+    }
+
+    /* Get the current status from bbswitch */
+    prime_discrete_on = prime_is_discrete_nvidia_on();
+    /* Get the current settings for discrete */
+    prime_action_on = prime_is_action_on();
+
+    if (prime_action_on) {
+        if (!alternative->nvidia_enabled) {
+            /* Select nvidia */
+            enable_nvidia(alternative, vendor_id, devices, cards_n);
+        }
+
+        if (!check_prime_xorg_conf(devices, cards_n)) {
+            fprintf(log_handle, "Check failed\n");
+
+            /* Remove xorg.conf */
+            remove_xorg_conf();
+            /* Write xorg.conf */
+            write_prime_xorg_conf(devices, cards_n);
+        }
+        else {
+            fprintf(log_handle, "No need to modify xorg.conf. Path: %s\n", xorg_conf_file);
+        }
+    }
+    else {
+        if (!alternative->prime_enabled) {
+            /* Select prime */
+            fprintf(log_handle, "Selecting prime\n");
+            select_driver("prime");
+        }
+
+        /* Remove xorg.conf */
+        remove_xorg_conf();
+    }
+
+    /* This means we need to call bbswitch
+     * to take action
+     */
+    if (prime_action_on == prime_discrete_on) {
+        if (prime_discrete_on) {
+            fprintf(log_handle, "Powering on the discrete card\n");
+            prime_enable_discrete();
+        }
+        else {
+            fprintf(log_handle, "Powering off the discrete card\n");
+            prime_disable_discrete();
+        }
+    }
 
     return 1;
 }
+
+
+static int enable_fglrx(struct alternatives *alternative,
+                        unsigned int vendor_id,
+                        struct device **devices,
+                        int cards_n) {
+    int status = 0;
+
+    /* Alternative not in use */
+    if (!alternative->fglrx_enabled) {
+        /* Select fglrx */
+        fprintf(log_handle, "Selecting fglrx\n");
+        status = select_driver("fglrx");
+        /* select_driver(other_arch_path, "nvidia"); */
+    }
+    /* Alternative in use */
+    else {
+        fprintf(log_handle, "Driver is already loaded and enabled\n");
+        status = 1;
+    }
+
+    if (status) {
+        /* If xorg.conf exists, make sure it contains
+         * the right BusId and NO NOUVEAU or FGLRX. If it doesn't, create a
+         * xorg.conf from scratch */
+        if (!check_vendor_bus_id_xorg_conf(devices, cards_n,
+                                           vendor_id, "fglrx")) {
+            fprintf(log_handle, "Check failed\n");
+
+            /* Remove xorg.conf */
+            remove_xorg_conf();
+
+            /* Only useful if more than one card is available */
+            if (cards_n > 1) {
+                /* Write xorg.conf */
+                write_to_xorg_conf(devices, cards_n, vendor_id);
+            }
+        }
+        else {
+            fprintf(log_handle, "No need to modify xorg.conf. Path: %s\n", xorg_conf_file);
+        }
+    }
+    else {
+        /* For some reason we failed to select the
+         * driver. Let's select Mesa here */
+        fprintf(log_handle, "Error: failed to enable the driver\n");
+        enable_mesa();
+    }
+
+    return status;
+}
+
+
+static int enable_pxpress(struct device **devices,
+                          int cards_n) {
+    int status = 0;
+
+    /* FIXME: check only xorg.conf for now */
+    if (!check_pxpress_xorg_conf(devices, cards_n)) {
+        fprintf(log_handle, "Check failed\n");
+
+        /* Remove xorg.conf */
+        remove_xorg_conf();
+        /* Write xorg.conf */
+        status = write_pxpress_xorg_conf(devices, cards_n);
+    }
+    else {
+        fprintf(log_handle, "No need to modify xorg.conf. Path: %s\n", xorg_conf_file);
+        status = 1;
+    }
+
+    /* Reenable this when we know more about amdpcsdb */
+#if 0
+    /* See if the discrete GPU is disabled */
+    if (is_pxpress_dgpu_disabled()) {
+        if (!alternative->pxpress_enabled) {
+            fprintf(log_handle, "Selecting pxpress\n");
+            status = select_driver("pxpress");
+        }
+        else {
+            fprintf(log_handle, "Driver is already loaded and enabled\n");
+            status = 1;
+        }
+    }
+    else {
+        if (!alternative->fglrx_enabled) {
+            fprintf(log_handle, "Selecting fglrx\n");
+            status = select_driver("fglrx");
+        }
+        else {
+            fprintf(log_handle, "Driver is already loaded and enabled\n");
+            status = 1;
+        }
+    }
+
+    if (status) {
+        /* If xorg.conf exists, make sure it contains
+         * the right BusId and the correct drivers. If it doesn't, create a
+         * xorg.conf from scratch */
+        if (!check_pxpress_xorg_conf(current_devices, cards_n)) {
+            fprintf(log_handle, "Check failed\n");
+
+            /* Remove xorg.conf */
+            remove_xorg_conf();
+            /* Write xorg.conf */
+            write_pxpress_xorg_conf(current_devices, cards_n);
+        }
+        else {
+            fprintf(log_handle, "No need to modify xorg.conf. Path: %s\n", xorg_conf_file);
+        }
+    }
+    else {
+        /* For some reason we failed to select the
+         * driver. Let's select Mesa here */
+        fprintf(log_handle, "Error: failed to enable the driver\n");
+        fprintf(log_handle, "Selecting mesa\n");
+        select_driver("mesa");
+        /* select_driver(other_arch_path, "mesa"); */
+        /* Remove xorg.conf */
+        remove_xorg_conf();
+    }
+#endif
+
+    return status;
+}
+
+
 
 
 int main(int argc, char *argv[]) {
@@ -616,14 +2029,15 @@ int main(int argc, char *argv[]) {
     char *fake_lspci_file = NULL;
     char *new_boot_file = NULL;
 
-    static int fake_laptop;
+    static int fake_laptop = 0;
 
     int has_intel = 0, has_amd = 0, has_nvidia = 0;
     int has_changed = 0;
     int has_moved_xorg_conf = 0;
     int nvidia_loaded = 0, fglrx_loaded = 0,
         intel_loaded = 0, radeon_loaded = 0,
-        nouveau_loaded = 0;
+        nouveau_loaded = 0, bbswitch_loaded = 0;
+    int fglrx_unloaded = 0, nvidia_unloaded = 0;
     int laptop = 0;
     int status = 0;
 
@@ -649,11 +2063,8 @@ int main(int argc, char *argv[]) {
     struct device *old_devices[MAX_CARDS_N];
 
     /* Alternatives */
-    char *alternative = NULL;
-    char *main_arch_path = NULL;
-    char *other_arch_path = NULL;
-    int nvidia_enabled = 0, fglrx_enabled = 0, mesa_enabled = 0;
-    int pxpress_enabled = 0, prime_enabled = 0;
+    struct alternatives *alternative = NULL;
+
 
     while (1) {
         static struct option long_options[] =
@@ -662,26 +2073,29 @@ int main(int argc, char *argv[]) {
         {"dry-run", no_argument,     &dry_run, 1},
         {"fake-laptop", no_argument, &fake_laptop, 1},
         {"fake-desktop", no_argument, &fake_laptop, 0},
+        {"fake-lightdm", no_argument, &fake_lightdm, 1},
         /* These options don't set a flag.
           We distinguish them by their indices. */
-        /*
-        {"",  no_argument,       0, 'a'},
-        {"log",  no_argument,       0, 'l'},
-        */
         {"log",  required_argument, 0, 'l'},
         {"fake-lspci",  required_argument, 0, 'f'},
         {"last-boot-file", required_argument, 0, 'b'},
         {"new-boot-file", required_argument, 0, 'n'},
         {"xorg-conf-file", required_argument, 0, 'x'},
+        {"amd-pcsdb-file", required_argument, 0, 'd'},
         {"fake-alternative", required_argument, 0, 'a'},
         {"fake-modules-path", required_argument, 0, 'm'},
         {"fake-alternatives-path", required_argument, 0, 'p'},
+        {"fake-dmesg-path", required_argument, 0, 's'},
+        {"prime-settings", required_argument, 0, 'z'},
+        {"bbswitch-path", required_argument, 0, 'y'},
+        {"bbswitch-quirks-path", required_argument, 0, 'g'},
+        {"dmi-product-version-path", required_argument, 0, 'h'},
         {0, 0, 0, 0}
         };
         /* getopt_long stores the option index here. */
         int option_index = 0;
 
-        opt = getopt_long (argc, argv, "lsf:::",
+        opt = getopt_long (argc, argv, "lbnfxdampzy:::",
                         long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -699,7 +2113,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'l':
                 /* printf("option -l with value '%s'\n", optarg); */
-                log_file = (char*)malloc(strlen(optarg) + 1);
+                log_file = malloc(strlen(optarg) + 1);
                 if (log_file)
                     strcpy(log_file, optarg);
                 else
@@ -707,7 +2121,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'b':
                 /* printf("option -b with value '%s'\n", optarg); */
-                last_boot_file = (char*)malloc(strlen(optarg) + 1);
+                last_boot_file = malloc(strlen(optarg) + 1);
                 if (last_boot_file)
                     strcpy(last_boot_file, optarg);
                 else
@@ -715,7 +2129,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'n':
                 /* printf("option -n with value '%s'\n", optarg); */
-                new_boot_file = (char*)malloc(strlen(optarg) + 1);
+                new_boot_file = malloc(strlen(optarg) + 1);
                 if (new_boot_file)
                     strcpy(new_boot_file, optarg);
                 else
@@ -723,7 +2137,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'f':
                 /* printf("option -f with value '%s'\n", optarg); */
-                fake_lspci_file = (char*)malloc(strlen(optarg) + 1);
+                fake_lspci_file = malloc(strlen(optarg) + 1);
                 if (fake_lspci_file)
                     strcpy(fake_lspci_file, optarg);
                 else
@@ -731,23 +2145,37 @@ int main(int argc, char *argv[]) {
                 break;
             case 'x':
                 /* printf("option -x with value '%s'\n", optarg); */
-                xorg_conf_file = (char*)malloc(strlen(optarg) + 1);
+                xorg_conf_file = malloc(strlen(optarg) + 1);
                 if (xorg_conf_file)
                     strcpy(xorg_conf_file, optarg);
                 else
                     abort();
                 break;
-            case 'a':
-                /* printf("option -a with value '%s'\n", optarg); */
-                alternative = (char*)malloc(strlen(optarg) + 1);
-                if (alternative)
-                    strcpy(alternative, optarg);
+            case 'd':
+                /* printf("option -x with value '%s'\n", optarg); */
+                amd_pcsdb_file = malloc(strlen(optarg) + 1);
+                if (amd_pcsdb_file)
+                    strcpy(amd_pcsdb_file, optarg);
                 else
                     abort();
                 break;
+            case 'a':
+                /* printf("option -a with value '%s'\n", optarg); */
+                alternative = calloc(1, sizeof(struct alternatives));
+                if (!alternative) {
+                    abort();
+                }
+                else {
+                    alternative->current = strdup(optarg);
+                    if (!alternative->current) {
+                        free(alternative);
+                        abort();
+                    }
+                }
+                break;
             case 'm':
                 /* printf("option -m with value '%s'\n", optarg); */
-                fake_modules_path = (char*)malloc(strlen(optarg) + 1);
+                fake_modules_path = malloc(strlen(optarg) + 1);
                 if (fake_modules_path)
                     strcpy(fake_modules_path, optarg);
                 else
@@ -755,10 +2183,42 @@ int main(int argc, char *argv[]) {
                 break;
             case 'p':
                 /* printf("option -p with value '%s'\n", optarg); */
-                fake_alternatives_path = (char*)malloc(strlen(optarg) + 1);
+                fake_alternatives_path = malloc(strlen(optarg) + 1);
                 if (fake_alternatives_path)
                     strcpy(fake_alternatives_path, optarg);
                 else
+                    abort();
+                break;
+            case 's':
+                /* printf("option -p with value '%s'\n", optarg); */
+                fake_dmesg_path = malloc(strlen(optarg) + 1);
+                if (fake_dmesg_path)
+                    strcpy(fake_dmesg_path, optarg);
+                else
+                    abort();
+                break;
+            case 'z':
+                /* printf("option -p with value '%s'\n", optarg); */
+                prime_settings = strdup(optarg);
+                if (!prime_settings)
+                    abort();
+                break;
+            case 'y':
+                /* printf("option -p with value '%s'\n", optarg); */
+                bbswitch_path = strdup(optarg);
+                if (!bbswitch_path)
+                    abort();
+                break;
+            case 'g':
+                /* printf("option -p with value '%s'\n", optarg); */
+                bbswitch_quirks_path = strdup(optarg);
+                if (!bbswitch_quirks_path)
+                    abort();
+                break;
+            case 'h':
+                /* printf("option -p with value '%s'\n", optarg); */
+                dmi_product_version_path = strdup(optarg);
+                if (!dmi_product_version_path)
                     abort();
                 break;
             case '?':
@@ -784,10 +2244,20 @@ int main(int argc, char *argv[]) {
         log_handle = stdout;
     }
 
+    if (is_disabled_in_cmdline()) {
+        fprintf(log_handle, "Disabled by kernel parameter \"%s\"\n",
+                KERN_PARAM);
+        goto end;
+    }
+
+
     /* TODO: require arguments and abort if they're not available */
 
     if (log_file)
         fprintf(log_handle, "log_file: %s\n", log_file);
+
+    if (!last_boot_file)
+        last_boot_file = strdup(LAST_BOOT);
 
     if (last_boot_file)
         fprintf(log_handle, "last_boot_file: %s\n", last_boot_file);
@@ -806,15 +2276,64 @@ int main(int argc, char *argv[]) {
     if (xorg_conf_file)
         fprintf(log_handle, "xorg.conf file: %s\n", xorg_conf_file);
     else {
-        xorg_conf_file = (char*)malloc(strlen("/etc/X11/xorg.conf") + 1);
-        if (xorg_conf_file) {
-            strcpy(xorg_conf_file, "/etc/X11/xorg.conf");
-        }
-        else {
+        xorg_conf_file = strdup(XORG_CONF);
+        if (!xorg_conf_file) {
             fprintf(log_handle, "Couldn't allocate xorg_conf_file\n");
             goto end;
         }
+    }
 
+    if (prime_settings)
+        fprintf(log_handle, "prime_settings file: %s\n", prime_settings);
+    else {
+        prime_settings = strdup("/etc/prime-discrete");
+        if (!prime_settings) {
+            fprintf(log_handle, "Couldn't allocate prime_settings\n");
+            goto end;
+        }
+    }
+
+    if (bbswitch_path)
+        fprintf(log_handle, "bbswitch_path file: %s\n", bbswitch_path);
+    else {
+        bbswitch_path = strdup("/proc/acpi/bbswitch");
+        if (!bbswitch_path) {
+            fprintf(log_handle, "Couldn't allocate bbswitch_path\n");
+            goto end;
+        }
+    }
+
+    if (bbswitch_quirks_path)
+        fprintf(log_handle, "bbswitch_quirks_path file: %s\n", bbswitch_quirks_path);
+    else {
+        bbswitch_quirks_path = strdup("/usr/share/nvidia-prime/prime-quirks");
+        if (!bbswitch_quirks_path) {
+            fprintf(log_handle, "Couldn't allocate bbswitch_quirks_path\n");
+            goto end;
+        }
+    }
+
+    if (dmi_product_version_path)
+        fprintf(log_handle, "bbswitch_path file: %s\n", dmi_product_version_path);
+    else {
+        dmi_product_version_path = strdup("/sys/class/dmi/id/product_version");
+        if (!dmi_product_version_path) {
+            fprintf(log_handle, "Couldn't allocate dmi_product_version_path\n");
+            goto end;
+        }
+    }
+
+    if (amd_pcsdb_file)
+        fprintf(log_handle, "amd_pcsdb_file file: %s\n", amd_pcsdb_file);
+    else {
+        amd_pcsdb_file = malloc(strlen("/etc/ati/amdpcsdb") + 1);
+        if (amd_pcsdb_file) {
+            strcpy(amd_pcsdb_file, "/etc/ati/amdpcsdb");
+        }
+        else {
+            fprintf(log_handle, "Couldn't allocate amd_pcsdb_file\n");
+            goto end;
+        }
     }
 
     /* Either simulate or check if dealing with a laptop */
@@ -825,14 +2344,19 @@ int main(int argc, char *argv[]) {
 
     fprintf(log_handle, "Is laptop? %s\n", (laptop ? "yes" : "no"));
 
+    bbswitch_loaded = is_module_loaded("bbswitch");
     nvidia_loaded = is_module_loaded("nvidia");
+    nvidia_unloaded = has_unloaded_module("nvidia");
     fglrx_loaded = is_module_loaded("fglrx");
+    fglrx_unloaded = has_unloaded_module("fglrx");
     intel_loaded = is_module_loaded("i915") || is_module_loaded("i810");
     radeon_loaded = is_module_loaded("radeon");
     nouveau_loaded = is_module_loaded("nouveau");
 
     fprintf(log_handle, "Is nvidia loaded? %s\n", (nvidia_loaded ? "yes" : "no"));
+    fprintf(log_handle, "Was nvidia unloaded? %s\n", (nvidia_unloaded ? "yes" : "no"));
     fprintf(log_handle, "Is fglrx loaded? %s\n", (fglrx_loaded ? "yes" : "no"));
+    fprintf(log_handle, "Was fglrx unloaded? %s\n", (fglrx_unloaded ? "yes" : "no"));
     fprintf(log_handle, "Is intel loaded? %s\n", (intel_loaded ? "yes" : "no"));
     fprintf(log_handle, "Is radeon loaded? %s\n", (radeon_loaded ? "yes" : "no"));
     fprintf(log_handle, "Is nouveau loaded? %s\n", (nouveau_loaded ? "yes" : "no"));
@@ -887,15 +2411,21 @@ int main(int argc, char *argv[]) {
 
                 /* We don't support more than MAX_CARDS_N */
                 if (cards_n < MAX_CARDS_N) {
-                    current_devices[cards_n] = (struct device*) malloc(sizeof(struct device));
+                    current_devices[cards_n] = malloc(sizeof(struct device));
+                    if (!current_devices[cards_n])
+                        goto end;
                     current_devices[cards_n]->boot_vga = pci_device_is_boot_vga(info);
                     current_devices[cards_n]->vendor_id = info->vendor_id;
                     current_devices[cards_n]->device_id = info->device_id;
+                    current_devices[cards_n]->domain = info->domain;
                     current_devices[cards_n]->bus = info->bus;
                     current_devices[cards_n]->dev = info->dev;
                     current_devices[cards_n]->func = info->func;
                 }
                 else {
+                    fprintf(log_handle, "Warning: too many devices %d. "
+                                        "Max supported %d. Ignoring the rest.\n",
+                                        cards_n, MAX_CARDS_N);
                     break;
                 }
                 /*
@@ -941,8 +2471,6 @@ int main(int argc, char *argv[]) {
     fprintf(log_handle, "Has the system changed? %s\n", has_changed ? "Yes" : "No");
 
 
-    /* TODO: disable if Bumblebee is in use */
-
     /* Check alternatives */
     get_architecture_paths(&main_arch_path, &other_arch_path);
 
@@ -957,26 +2485,40 @@ int main(int argc, char *argv[]) {
 
     /* If alternative is not NULL, then it's a test */
     if (!alternative)
-        alternative = get_current_alternative(main_arch_path);
+        alternative = calloc(1, sizeof(struct alternatives));
+    get_alternatives(alternative, main_arch_path);
 
-    if (!alternative) {
+    if (!alternative->current) {
         fprintf(stderr, "Error: no alternative found\n");
         goto end;
     }
 
-    fprintf(log_handle, "Current alternative: %s\n", alternative);
+    fprintf(log_handle, "Current alternative: %s\n", alternative->current);
 
-    nvidia_enabled = is_alternative_in_use(alternative, "nvidia");
-    fglrx_enabled = is_alternative_in_use(alternative, "fglrx");
-    mesa_enabled = is_alternative_in_use(alternative, "mesa");
-    pxpress_enabled = is_alternative_in_use(alternative, "pxpress");
-    prime_enabled = is_alternative_in_use(alternative, "prime");
+    fprintf(log_handle, "Is nvidia enabled? %s\n", alternative->nvidia_enabled ? "yes" : "no");
+    fprintf(log_handle, "Is fglrx enabled? %s\n", alternative->fglrx_enabled ? "yes" : "no");
+    fprintf(log_handle, "Is mesa enabled? %s\n", alternative->mesa_enabled ? "yes" : "no");
+    fprintf(log_handle, "Is pxpress enabled? %s\n", alternative->pxpress_enabled ? "yes" : "no");
+    fprintf(log_handle, "Is prime enabled? %s\n", alternative->prime_enabled ? "yes" : "no");
 
-    fprintf(log_handle, "Is nvidia enabled? %s\n", nvidia_enabled ? "yes" : "no");
-    fprintf(log_handle, "Is fglrx enabled? %s\n", fglrx_enabled ? "yes" : "no");
-    fprintf(log_handle, "Is mesa enabled? %s\n", mesa_enabled ? "yes" : "no");
-    fprintf(log_handle, "Is pxpress enabled? %s\n", pxpress_enabled ? "yes" : "no");
-    fprintf(log_handle, "Is prime enabled? %s\n", prime_enabled ? "yes" : "no");
+    fprintf(log_handle, "Is nvidia available? %s\n", alternative->nvidia_available ? "yes" : "no");
+    fprintf(log_handle, "Is fglrx available? %s\n", alternative->fglrx_available ? "yes" : "no");
+    fprintf(log_handle, "Is mesa available? %s\n", alternative->mesa_available ? "yes" : "no");
+    fprintf(log_handle, "Is pxpress available? %s\n", alternative->pxpress_available ? "yes" : "no");
+    fprintf(log_handle, "Is prime available? %s\n", alternative->prime_available ? "yes" : "no");
+
+    /* If the module is loaded but the alternatives are not there
+     * we're probably dealing with a proprietary installer
+     */
+    if ((fglrx_loaded && !alternative->fglrx_available) ||
+        (nvidia_loaded && !alternative->nvidia_available)) {
+        fprintf(log_handle, "Proprietary driver installer detected\n");
+        fprintf(log_handle, "Nothing to do\n");
+        goto end;
+    }
+
+    if (has_changed)
+        fprintf(log_handle, "System configuration has changed\n");
 
     if (cards_n == 1) {
         fprintf(log_handle, "Single card detected\n");
@@ -987,33 +2529,57 @@ int main(int argc, char *argv[]) {
                      &boot_vga_device_id);
 
         if (boot_vga_vendor_id == INTEL) {
-            if (!mesa_enabled) {
-                /* Select mesa */
-                fprintf(log_handle, "Selecting mesa\n");
-                status = select_driver(main_arch_path, "mesa");
-                /* select_driver(other_arch_path, "mesa"); */
+            /* AMD PowerXpress */
+            if (laptop && fglrx_unloaded) {
+                fprintf(log_handle, "PowerXpress detected\n");
 
-                /* Remove xorg.conf */
-                fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                move_xorg_conf();
-                has_moved_xorg_conf = 1;
+                /* Get the BusID of the disabled discrete from dmesg */
+                add_amd_gpu_bus_from_dmesg(current_devices, &cards_n);
+
+                /* Get data about the first discrete card */
+                get_first_discrete(current_devices, cards_n,
+                                   &discrete_vendor_id,
+                                   &discrete_device_id);
+
+                enable_pxpress(current_devices, cards_n);
+                /* No further action */
+                goto end;
+            }
+            else if (laptop && nvidia_unloaded) {
+                /* NVIDIA PRIME */
+                fprintf(log_handle, "PRIME detected\n");
+
+                /* Get the BusID of the disabled discrete from dmesg */
+                add_nvidia_gpu_bus_from_dmesg(current_devices, &cards_n);
+
+                /* Get data about the first discrete card */
+                get_first_discrete(current_devices, cards_n,
+                                   &discrete_vendor_id,
+                                   &discrete_device_id);
+
+                /* Try to enable prime */
+                enable_prime(prime_settings, bbswitch_loaded,
+                             discrete_vendor_id, alternative,
+                             current_devices, cards_n);
+                goto end;
             }
             else {
-                fprintf(log_handle, "Nothing to do\n");
+                if (!alternative->mesa_enabled) {
+                    /* Select mesa */
+                    status = enable_mesa();
+                    has_moved_xorg_conf = 1;
+                }
+                else {
+                    fprintf(log_handle, "Nothing to do\n");
+                }
             }
         }
         else if (boot_vga_vendor_id == AMD) {
             /* if fglrx is loaded enable fglrx alternative */
-            if (fglrx_loaded) {
-                if (!fglrx_enabled) {
-                    /* Select fglrx */
-                    fprintf(log_handle, "Selecting fglrx\n");
-                    status = select_driver(main_arch_path, "fglrx");
-                    /* select_driver(other_arch_path, "fglrx"); */
-
-                    /* Remove xorg.conf */
-                    fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                    move_xorg_conf();
+            if (fglrx_loaded && !radeon_loaded) {
+                if (!alternative->fglrx_enabled) {
+                    /* Try to enable fglrx */
+                    enable_fglrx(alternative, discrete_vendor_id, current_devices, cards_n);
                     has_moved_xorg_conf = 1;
                 }
                 else {
@@ -1022,16 +2588,20 @@ int main(int argc, char *argv[]) {
                 }
             }
             else {
+                /* If both the closed kernel module and the open
+                 * kernel module are loaded, then we're in trouble
+                 */
+                if (fglrx_loaded && radeon_loaded) {
+                    /* Fake a system change to trigger
+                     * a reconfiguration
+                     */
+                    has_changed = 1;
+                }
+
                 /* Select mesa as a fallback */
                 fprintf(log_handle, "Kernel Module is not loaded\n");
-                if (!mesa_enabled) {
-                    fprintf(log_handle, "Selecting mesa\n");
-                    status = select_driver(main_arch_path, "mesa");
-                    /* select_driver(other_arch_path, "mesa"); */
-
-                    /* Remove xorg.conf */
-                    fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                    move_xorg_conf();
+                if (!alternative->mesa_enabled) {
+                    status = enable_mesa();
                     has_moved_xorg_conf = 1;
                 }
                 else {
@@ -1041,16 +2611,10 @@ int main(int argc, char *argv[]) {
         }
         else if (boot_vga_vendor_id == NVIDIA) {
             /* if nvidia is loaded enable nvidia alternative */
-            if (nvidia_loaded) {
-                if (!nvidia_enabled) {
-                    /* Select nvidia */
-                    fprintf(log_handle, "Selecting nvidia\n");
-                    status = select_driver(main_arch_path, "nvidia");
-                    /* select_driver(other_arch_path, "nvidia"); */
-
-                    /* Remove xorg.conf */
-                    fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                    move_xorg_conf();
+            if (nvidia_loaded && !nouveau_loaded) {
+                if (!alternative->nvidia_enabled) {
+                    /* Try to enable nvidia */
+                    enable_nvidia(alternative, discrete_vendor_id, current_devices, cards_n);
                     has_moved_xorg_conf = 1;
                 }
                 else {
@@ -1059,16 +2623,20 @@ int main(int argc, char *argv[]) {
                 }
             }
             else {
+                /* If both the closed kernel module and the open
+                 * kernel module are loaded, then we're in trouble
+                 */
+                if (nvidia_loaded && nouveau_loaded) {
+                    /* Fake a system change to trigger
+                     * a reconfiguration
+                     */
+                    has_changed = 1;
+                }
+
                 /* Select mesa as a fallback */
                 fprintf(log_handle, "Kernel Module is not loaded\n");
-                if (!mesa_enabled) {
-                    fprintf(log_handle, "Selecting mesa\n");
-                    status = select_driver(main_arch_path, "mesa");
-                    /* select_driver(other_arch_path, "mesa"); */
-
-                    /* Remove xorg.conf */
-                    fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                    move_xorg_conf();
+                if (!alternative->mesa_enabled) {
+                    status = enable_mesa();
                     has_moved_xorg_conf = 1;
                 }
                 else {
@@ -1084,8 +2652,7 @@ int main(int argc, char *argv[]) {
 
             if (!has_moved_xorg_conf) {
                 /* Remove xorg.conf */
-                fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                move_xorg_conf();
+                remove_xorg_conf();
             }
         }
         else if (!has_moved_xorg_conf) {
@@ -1106,19 +2673,28 @@ int main(int argc, char *argv[]) {
         /* Intel + another GPU */
         if (boot_vga_vendor_id == INTEL) {
             fprintf(log_handle, "Intel IGP detected\n");
-            if (laptop &&
-                ((!radeon_loaded && (fglrx_loaded || fglrx_enabled || pxpress_enabled)) ||
-                 (!nouveau_loaded && (nvidia_enabled || prime_enabled || nvidia_loaded)))) {
-                /* Hybrid graphics
-                 * No need to do anything, as either nvidia-prime or
-                 * fglrx-pxpress will take over.
-                 */
-                fprintf(log_handle, "Intel hybrid laptop - nothing to do\n");
+            /* AMD PowerXpress */
+            if (laptop && intel_loaded && fglrx_loaded && !radeon_loaded) {
+                fprintf(log_handle, "PowerXpress detected\n");
+
+                enable_pxpress(current_devices, cards_n);
+            }
+            /* NVIDIA Optimus */
+            else if (laptop && (intel_loaded && !nouveau_loaded &&
+                                (alternative->nvidia_available ||
+                                 alternative->prime_available) &&
+                                 nvidia_loaded)) {
+                fprintf(log_handle, "Intel hybrid laptop\n");
+
+                enable_prime(prime_settings, bbswitch_loaded,
+                             discrete_vendor_id, alternative,
+                             current_devices, cards_n);
                 goto end;
             }
             else {
                 /* Desktop system or Laptop with open drivers only */
                 fprintf(log_handle, "Desktop system detected\n");
+                fprintf(log_handle, "or laptop with open drivers\n");
 
                 /* TODO: Check the alternative and the module */
                 /* If open source driver for the discrete card:
@@ -1131,57 +2707,33 @@ int main(int argc, char *argv[]) {
                     fprintf(log_handle, "Discrete NVIDIA card detected\n");
 
                     /* Kernel module is available */
-                    if (nvidia_loaded) {
-                        /* Alternative not in use */
-                        if (!nvidia_enabled) {
-                            /* Select nvidia */
-                            fprintf(log_handle, "Selecting nvidia\n");
-                            status = select_driver(main_arch_path, "nvidia");
-                            /* select_driver(other_arch_path, "nvidia"); */
-                        }
-                        /* Alternative in use */
-                        else {
-                            fprintf(log_handle, "Driver is already loaded and enabled\n");
-                            /* TODO: If xorg.conf exists, make sure it contains
-                             * the right BusId and NO NOUVEAU or FGLRX. If it doesn't, create a
-                             * xorg.conf from scratch */
-                            status = 1;
-                        }
-                        /* See if enabling the driver failed */
-                        if (status) {
-                            fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
-#if 0
-                            write_to_xorg_conf(discrete_bus, discrete_dev, discrete_func);
-#endif
-                            write_to_xorg_conf(current_devices, cards_n, discrete_vendor_id);
-                        }
-                        else {
-                            /* FIXME: select Mesa here */
-                            fprintf(log_handle, "Error: failed to enable the driver\n");
-                            /* Remove xorg.conf */
-                            fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                            move_xorg_conf();
-                        }
+                    if (nvidia_loaded && !nouveau_loaded) {
+                        /* Try to enable nvidia */
+                        enable_nvidia(alternative, discrete_vendor_id, current_devices, cards_n);
                     }
                     /* Kernel module is not available */
                     else {
+                        /* If both the closed kernel module and the open
+                         * kernel module are loaded, then we're in trouble
+                         */
+                        if (nvidia_loaded && nouveau_loaded) {
+                            /* Fake a system change to trigger
+                             * a reconfiguration
+                             */
+                            has_changed = 1;
+                        }
+
                         /* See if alternatives are broken */
-                        if (!mesa_enabled) {
+                        if (!alternative->mesa_enabled) {
                             /* Select mesa as a fallback */
                             fprintf(log_handle, "Kernel Module is not loaded\n");
-                            fprintf(log_handle, "Selecting mesa\n");
-                            status = select_driver(main_arch_path, "mesa");
-                            /* select_driver(other_arch_path, "mesa"); */
-                            /* Remove xorg.conf */
-                            fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                            move_xorg_conf();
+                            status = enable_mesa();
                         }
                         else {
                             if (has_changed) {
                                 fprintf(log_handle, "System configuration has changed\n");
                                 /* Remove xorg.conf */
-                                fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                                move_xorg_conf();
+                                remove_xorg_conf();
                             }
                             else {
                                 fprintf(log_handle, "Driver not enabled or not in use\n");
@@ -1190,75 +2742,38 @@ int main(int argc, char *argv[]) {
                         }
 
                     }
-#if 0
-                    if (nvidia_loaded && nvidia_enabled) {
-                        fprintf(log_handle, "Driver enabled and in use\n");
-                        /* TODO: If xorg.conf exists, make sure it contains
-                         * the right BusId and NO NOUVEAU or FGLRX. If it doesn't, create a
-                         * xorg.conf from scratch */
-                        fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
-                        write_to_xorg_conf(discrete_bus, discrete_dev, discrete_func);
-                    }
-                    else {
-                        fprintf(log_handle, "Driver not enabled or not in use\n");
-                        fprintf(log_handle, "Nothing to do\n");
-                    }
-#endif
                 }
                 else if (discrete_vendor_id == AMD) {
                     fprintf(log_handle, "Discrete AMD card detected\n");
 
                     /* Kernel module is available */
-                    if (fglrx_loaded) {
-                        /* Alternative not in use */
-                        if (!fglrx_enabled) {
-                            /* Select nvidia */
-                            fprintf(log_handle, "Selecting fglrx\n");
-                            status = select_driver(main_arch_path, "fglrx");
-                            /* select_driver(other_arch_path, "nvidia"); */
-                        }
-                        /* Alternative in use */
-                        else {
-                            fprintf(log_handle, "Driver is already loaded and enabled\n");
-                            /* TODO: If xorg.conf exists, make sure it contains
-                             * the right BusId and NO NOUVEAU or FGLRX. If it doesn't, create a
-                             * xorg.conf from scratch */
-                            status = 1;
-                        }
-                        /* See if enabling the driver failed */
-                        if (status) {
-                            fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
-                            /* Call aticonfig */
-                            /* enable_all_amds(); */
-                            write_to_xorg_conf(current_devices, cards_n, discrete_vendor_id);
-                        }
-                        else {
-                            /* FIXME: select Mesa here */
-                            fprintf(log_handle, "Error: failed to enable the driver\n");
-                            /* Remove xorg.conf */
-                            fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                            move_xorg_conf();
-                        }
+                    if (fglrx_loaded && !radeon_loaded) {
+                        /* Try to enable fglrx */
+                        enable_fglrx(alternative, discrete_vendor_id, current_devices, cards_n);
                     }
                     /* Kernel module is not available */
                     else {
+                        /* If both the closed kernel module and the open
+                         * kernel module are loaded, then we're in trouble
+                         */
+                        if (fglrx_loaded && radeon_loaded) {
+                            /* Fake a system change to trigger
+                             * a reconfiguration
+                             */
+                            has_changed = 1;
+                        }
+
                         /* See if alternatives are broken */
-                        if (!mesa_enabled) {
+                        if (!alternative->mesa_enabled) {
                             /* Select mesa as a fallback */
                             fprintf(log_handle, "Kernel Module is not loaded\n");
-                            fprintf(log_handle, "Selecting mesa\n");
-                            status = select_driver(main_arch_path, "mesa");
-                            /* select_driver(other_arch_path, "mesa"); */
-                            /* Remove xorg.conf */
-                            fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                            move_xorg_conf();
+                            status = enable_mesa();
                         }
                         else {
                             if (has_changed) {
                                 fprintf(log_handle, "System configuration has changed\n");
                                 /* Remove xorg.conf */
-                                fprintf(log_handle, "Removing xorg.conf. Path: %s\n", xorg_conf_file);
-                                move_xorg_conf();
+                                remove_xorg_conf();
                             }
                             else {
                                 fprintf(log_handle, "Driver not enabled or not in use\n");
@@ -1266,24 +2781,6 @@ int main(int argc, char *argv[]) {
                             }
                         }
                     }
-
-
-#if 0
-                    if (fglrx_loaded && fglrx_enabled) {
-                        fprintf(log_handle, "Driver enabled and in use\n");
-                        /* TODO: If xorg.conf exists, make sure it contains
-                         * the right BusId and fglrx. If it doesn't, create a
-                         * xorg.conf from scratch using aticonfig */
-                        fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
-
-                        /* Call aticonfig */
-                        enable_all_amds();
-                    }
-                    else {
-                        fprintf(log_handle, "Driver not enabled or not in use\n");
-                        fprintf(log_handle, "Nothing to do\n");
-                    }
-#endif
                 }
                 else {
                     fprintf(log_handle, "Unsupported discrete card vendor: %x\n", discrete_vendor_id);
@@ -1297,39 +2794,91 @@ int main(int argc, char *argv[]) {
             fprintf(log_handle, "AMD IGP detected\n");
             if (discrete_vendor_id == AMD) {
                 fprintf(log_handle, "Discrete AMD card detected\n");
-                if (fglrx_loaded && fglrx_enabled) {
-                    fprintf(log_handle, "Driver enabled and in use\n");
-                    /* TODO: If xorg.conf exists, make sure it contains
-                     * the right BusIds (for boot vga and discrete cards) and fglrx.
-                     * If it doesn't, create a xorg.conf from scratch using aticonfig */
-                    fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
 
-                    /* Call aticonfig */
-                    /* enable_all_amds(); */
-                    write_to_xorg_conf(current_devices, cards_n, discrete_vendor_id);
+
+                /* Kernel module is available */
+                if (fglrx_loaded && !radeon_loaded) {
+                    /* Try to enable fglrx */
+                    enable_fglrx(alternative, discrete_vendor_id, current_devices, cards_n);
                 }
+                /* Kernel module is not available */
                 else {
-                    fprintf(log_handle, "Driver not enabled or not in use\n");
-                    fprintf(log_handle, "Nothing to do\n");
+                    /* If both the closed kernel module and the open
+                     * kernel module are loaded, then we're in trouble
+                     */
+                    if (fglrx_loaded && radeon_loaded) {
+                        /* Fake a system change to trigger
+                         * a reconfiguration
+                         */
+                        has_changed = 1;
+                    }
+                    /* See if alternatives are broken */
+                    if (!alternative->mesa_enabled) {
+                        /* Select mesa as a fallback */
+                        fprintf(log_handle, "Kernel Module is not loaded\n");
+                        status = enable_mesa();
+                    }
+                    else {
+                        if (has_changed) {
+                            fprintf(log_handle, "System configuration has changed\n");
+                            /* Remove xorg.conf */
+                            remove_xorg_conf();
+                        }
+                        else {
+                            fprintf(log_handle, "Driver not enabled or not in use\n");
+                            fprintf(log_handle, "Nothing to do\n");
+                        }
+                    }
                 }
             }
             else if (discrete_vendor_id == NVIDIA) {
-                fprintf(log_handle, "Discrete AMD card detected\n");
-                if (nvidia_loaded && nvidia_enabled) {
-                    fprintf(log_handle, "Driver enabled and in use\n");
-                    /* TODO: If xorg.conf exists, make sure it contains
-                     * the right BusId and NO NOUVEAU or FGLRX. If it doesn't, create a
-                     * xorg.conf from scratch */
-                    fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
-                    /* Create xorg.conf for NVIDIA */
-#if 0
-                    write_to_xorg_conf(discrete_bus, discrete_dev, discrete_func);
-#endif
-                    write_to_xorg_conf(current_devices, cards_n, discrete_vendor_id);
+                fprintf(log_handle, "Discrete NVIDIA card detected\n");
+
+                /* Kernel module is available */
+                if (nvidia_loaded && !nouveau_loaded) {
+                    /* Try to enable nvidia */
+                    enable_nvidia(alternative, discrete_vendor_id, current_devices, cards_n);
                 }
+                /* Nvidia kernel module is not available */
                 else {
-                    fprintf(log_handle, "Driver not enabled or not in use\n");
-                    fprintf(log_handle, "Nothing to do\n");
+                    /* See if fglrx is in use */
+                    /* Kernel module is available */
+                    if (fglrx_loaded && !radeon_loaded) {
+                        /* Try to enable fglrx */
+                        enable_fglrx(alternative, boot_vga_vendor_id, current_devices, cards_n);
+                    }
+                    /* Kernel module is not available */
+                    else {
+                        /* If both the closed kernel module and the open
+                         * kernel module are loaded, then we're in trouble
+                         */
+                        if ((fglrx_loaded && radeon_loaded) ||
+                            (nvidia_loaded && nouveau_loaded)) {
+                            /* Fake a system change to trigger
+                             * a reconfiguration
+                             */
+                            has_changed = 1;
+                        }
+
+                        /* See if alternatives are broken */
+                        if (!alternative->mesa_enabled) {
+                            /* Select mesa as a fallback */
+                            fprintf(log_handle, "Kernel Module is not loaded\n");
+                            enable_mesa();
+                        }
+                        else {
+                            if (has_changed) {
+                                fprintf(log_handle, "System configuration has changed\n");
+                                /* Remove xorg.conf */
+                                remove_xorg_conf();
+                            }
+                            else {
+                                fprintf(log_handle, "Driver not enabled or not in use\n");
+                                fprintf(log_handle, "Nothing to do\n");
+                            }
+                        }
+
+                    }
                 }
             }
             else {
@@ -1363,20 +2912,41 @@ end:
     if (xorg_conf_file)
         free(xorg_conf_file);
 
+    if (amd_pcsdb_file)
+        free(amd_pcsdb_file);
+
     if (main_arch_path)
         free(main_arch_path);
 
     if (other_arch_path)
         free(other_arch_path);
 
+    if (alternative) {
+        if (alternative->current)
+            free(alternative->current);
+        free(alternative);
+    }
+
     if (fake_alternatives_path)
         free(fake_alternatives_path);
+
+    if (fake_dmesg_path)
+        free(fake_dmesg_path);
 
     if (fake_modules_path)
         free(fake_modules_path);
 
-    if (alternative)
-        free(alternative);
+    if (prime_settings)
+        free(prime_settings);
+
+    if (bbswitch_path)
+        free(bbswitch_path);
+
+    if (bbswitch_quirks_path)
+        free(bbswitch_quirks_path);
+
+    if (dmi_product_version_path)
+        free(dmi_product_version_path);
 
     /* Free the devices structs */
     for(i = 0; i < cards_n; i++) {

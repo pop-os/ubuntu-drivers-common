@@ -55,23 +55,13 @@
 #include <time.h>
 
 
-#define PCI_CLASS_PREHISTORIC           0x00
-
 #define PCI_CLASS_DISPLAY               0x03
+#define PCI_CLASS_DISPLAY_OTHER         0x0380
 
-#define PCI_CLASS_MULTIMEDIA            0x04
-#define PCI_SUBCLASS_MULTIMEDIA_VIDEO   0x00
-
-#define PCI_CLASS_PROCESSOR             0x0b
-#define PCI_SUBCLASS_PROCESSOR_COPROC   0x40
-
-#define PCIINFOCLASSES(c)                                               \
-    ( (((c) & 0x00ff0000) == (PCI_CLASS_PREHISTORIC << 16))             \
-      || (((c) & 0x00ff0000) == (PCI_CLASS_DISPLAY << 16))              \
-      || ((((c) & 0x00ffff00)                                           \
-           == ((PCI_CLASS_MULTIMEDIA << 16) | (PCI_SUBCLASS_MULTIMEDIA_VIDEO << 8)))) \
-      || ((((c) & 0x00ffff00)                                           \
-           == ((PCI_CLASS_PROCESSOR << 16) | (PCI_SUBCLASS_PROCESSOR_COPROC << 8)))) )
+#define PCIINFOCLASSES(c) \
+    ( (((c) & 0x00ff0000) \
+     == (PCI_CLASS_DISPLAY << 16))  \
+     && (((c) & 0x00ffff00) != (PCI_CLASS_DISPLAY_OTHER << 8)) )
 
 #define LAST_BOOT "/var/lib/ubuntu-drivers-common/last_gfx_boot"
 #define XORG_CONF "/etc/X11/xorg.conf"
@@ -346,33 +336,47 @@ static int load_bbswitch() {
 }
 
 
-/* Get the first line of the output of a command */
-char* get_output(char *command) {
+/* Get the first match from the output of a command */
+static char* get_output(char *command, char *pattern, char *ignore) {
     int len;
-    char temp[1035];
+    char buffer[1035];
     char *output = NULL;
     FILE *pfile = NULL;
     pfile = popen(command, "r");
     if (pfile == NULL) {
-        fprintf(stderr, "Failed to run command\n");
+        fprintf(stderr, "Failed to run command %s\n", command);
         return NULL;
     }
 
-    if (fgets(temp, sizeof(temp), pfile) != NULL) {
-        output = malloc(strlen(temp) + 1);
-        if (!output) {
-            pclose(pfile);
-            return NULL;
+    while (fgets(buffer, sizeof(buffer), pfile)) {
+        /* If no search pattern was provided, just
+         * return the first non zero legth line
+         */
+        if (!pattern) {
+            output = strdup(buffer);
+            break;
         }
-        strcpy(output, temp);
+        else {
+            /* Look for the search pattern */
+            if (ignore && (strstr(buffer, ignore) != NULL)) {
+                /* Skip this line */
+                continue;
+            }
+            /* Look for the pattern */
+            if (strstr(buffer, pattern) != NULL) {
+                output = strdup(buffer);
+                break;
+            }
+        }
     }
     pclose(pfile);
 
-    /* Remove newline */
-    len = strlen(output);
-    if(output[len-1] == '\n' )
-       output[len-1] = 0;
-
+    if (output) {
+        /* Remove newline */
+        len = strlen(output);
+        if(output[len-1] == '\n' )
+           output[len-1] = 0;
+    }
     return output;
 }
 
@@ -381,7 +385,7 @@ static void get_architecture_paths(char **main_arch_path,
                                   char **other_arch_path) {
     char *main_arch = NULL;
 
-    main_arch = get_output("dpkg --print-architecture");
+    main_arch = get_output("dpkg --print-architecture", NULL, NULL);
     if (strcmp(main_arch, "amd64") == 0) {
         *main_arch_path = strdup("x86_64-linux-gnu");
         *other_arch_path = strdup("i386-linux-gnu");
@@ -427,17 +431,16 @@ static char* get_alternative_link(char *arch_path, char *pattern) {
         fclose(pfile);
     }
     else {
-        sprintf(command, "update-alternatives --list %s_gl_conf | grep %s",
-                arch_path, pattern);
+        sprintf(command, "update-alternatives --list %s_gl_conf",
+                arch_path);
 
         /* Make sure we don't catch prime by mistake when
          * looking for nvidia
          */
-        if (strcmp(pattern, "nvidia") == 0) {
-            strcat(command, " | grep -v prime");
-        }
-
-        alternative = get_output(command);
+        if (strcmp(pattern, "nvidia") == 0)
+            alternative = get_output(command, pattern, "prime");
+        else
+            alternative = get_output(command, pattern, NULL);
     }
 
     return alternative;
@@ -915,8 +918,10 @@ static int check_prime_xorg_conf(struct device **devices,
         if (strstr(line, "#") == NULL) {
             /* Parse options here */
             if (istrstr(line, "Option") != NULL) {
-                if (istrstr(line, "UseDisplayDevice") != NULL &&
-                    istrstr(line, "none") != NULL) {
+                if ((istrstr(line, "AllowEmptyInitialConfiguration") != NULL &&
+                    istrstr(line, "on") != NULL) ||
+                    (istrstr(line, "ConstrainCursor") != NULL &&
+                    istrstr(line, "off") != NULL)) {
                     x_options_matches += 1;
                 }
             }
@@ -955,12 +960,12 @@ static int check_prime_xorg_conf(struct device **devices,
          */
         return (intel_matches == 1 &&
                 intel_set == 1 && nvidia_set == 1 &&
-                x_options_matches > 0);
+                x_options_matches > 1);
     }
     else {
         return (intel_matches == 1 && nvidia_matches == 1 &&
                 intel_set == 1 && nvidia_set == 1 &&
-                x_options_matches > 0);
+                x_options_matches > 1);
     }
 }
 
@@ -1218,11 +1223,12 @@ static int write_prime_xorg_conf(struct device **devices, int cards_n) {
                 "    Identifier \"nvidia\"\n"
                 "    Driver \"nvidia\"\n"
                 "    BusID \"PCI:%d@%d:%d:%d\"\n"
+                "    Option \"ConstrainCursor\" \"off\"\n"
                 "EndSection\n\n"
                 "Section \"Screen\"\n"
                 "    Identifier \"nvidia\"\n"
                 "    Device \"nvidia\"\n"
-                "    Option \"UseDisplayDevice\" \"none\"\n"
+                "    Option \"AllowEmptyInitialConfiguration\" \"on\"\n"
                 "EndSection\n\n",
                (int)(devices[i]->bus),
                (int)(devices[i]->domain),
@@ -1425,7 +1431,8 @@ static int write_data_to_file(struct device **devices,
 }
 
 
-static int get_vars(FILE *file, struct device **devices, int num) {
+static int get_vars(const char *line, struct device **devices,
+                    int num, int desired_matches) {
     int status;
 
     devices[num] = malloc(sizeof(struct device));
@@ -1433,7 +1440,7 @@ static int get_vars(FILE *file, struct device **devices, int num) {
     if (!devices[num])
         return EOF;
 
-    status = fscanf(file, "%04x:%04x;%04x:%02x:%02x:%d;%d\n",
+    status = sscanf(line, "%04x:%04x;%04x:%02x:%02x:%d;%d\n",
                     &devices[num]->vendor_id,
                     &devices[num]->device_id,
                     &devices[num]->domain,
@@ -1442,7 +1449,8 @@ static int get_vars(FILE *file, struct device **devices, int num) {
                     &devices[num]->func,
                     &devices[num]->boot_vga);
 
-    if (status == EOF)
+    /* Make sure that we match "desired_matches" */
+    if (status == EOF || status != desired_matches)
         free(devices[num]);
 
     return status;
@@ -1453,7 +1461,11 @@ static int read_data_from_file(struct device **devices,
                                int *cards_number,
                                char *filename) {
     /* Read from last boot gfx */
+    char line[100];
     FILE *pfile = NULL;
+    /* The number of digits we expect to match per line */
+    int desired_matches = 7;
+
     pfile = fopen(filename, "r");
     if (pfile == NULL) {
         fprintf(log_handle, "I couldn't open %s for reading.\n", filename);
@@ -1478,8 +1490,16 @@ static int read_data_from_file(struct device **devices,
         return 0;
     }
     else {
-        while (get_vars(pfile, devices, *cards_number) != EOF) {
-            *cards_number += 1;
+        /* Use fgets so as to limit the buffer length */
+        while (fgets(line, sizeof(line), pfile) && (*cards_number < MAX_CARDS_N)) {
+            if (strlen(line) > 0) {
+                /* See if we actually get all the desired digits,
+                 * as per "desired_matches"
+                 */
+                if (get_vars(line, devices, *cards_number, desired_matches) == desired_matches) {
+                    *cards_number += 1;
+                }
+            }
         }
     }
 
@@ -1523,6 +1543,8 @@ static int add_gpu_from_stream(FILE *pfile, const char *pattern, struct device *
     int status = EOF;
     char line[1035];
     char *match = NULL;
+    /* The number of digits we expect to match per line */
+    int desired_matches = 4;
 
     if (!pfile) {
         fprintf(log_handle, "Error: passed invalid stream.\n");
@@ -1548,7 +1570,10 @@ static int add_gpu_from_stream(FILE *pfile, const char *pattern, struct device *
         }
     }
 
-    if (status == EOF) {
+    /* Check that we actually matched all the desired digits,
+     * as per "desired_matches"
+     */
+    if (status == EOF || status != desired_matches) {
         free(devices[*num]);
         return 0;
     }

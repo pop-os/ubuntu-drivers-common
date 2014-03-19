@@ -38,7 +38,7 @@
  * authorization from the copyright holder(s) and author(s).
  *
  *
- * Build with `gcc -o gpu-manager gpu-manager.c $(pkg-config --cflags --libs pciaccess)`
+ * Build with `gcc -o gpu-manager gpu-manager.c $(pkg-config --cflags --libs pciaccess libdrm)`
  */
 
 #define _GNU_SOURCE
@@ -53,7 +53,9 @@
 #include <dirent.h>
 #include <getopt.h>
 #include <time.h>
-
+#include <fcntl.h>
+#include "xf86drm.h"
+#include "xf86drmMode.h"
 
 #define PCI_CLASS_DISPLAY               0x03
 #define PCI_CLASS_DISPLAY_OTHER         0x0380
@@ -64,8 +66,8 @@
      && (((c) & 0x00ffff00) != (PCI_CLASS_DISPLAY_OTHER << 8)) )
 
 #define LAST_BOOT "/var/lib/ubuntu-drivers-common/last_gfx_boot"
+#define OFFLOADING_CONF "/var/lib/ubuntu-drivers-common/requires_offloading"
 #define XORG_CONF "/etc/X11/xorg.conf"
-#define FORCE_LAPTOP "/etc/force-laptop"
 #define KERN_PARAM "nogpumanager"
 
 #define AMD 0x1002
@@ -832,17 +834,8 @@ static int is_pxpress_dgpu_disabled() {
     FILE *file;
     struct stat stbuf;
 
-    /* If file doesn't exist */
-    if (stat(amd_pcsdb_file, &stbuf) == -1) {
-        fprintf(log_handle, "can't access %s\n", amd_pcsdb_file);
+    if (!exists_not_empty(amd_pcsdb_file))
         return 0;
-    }
-    /* If file is empty */
-    if ((stbuf.st_mode & S_IFMT) && ! stbuf.st_size) {
-        fprintf(log_handle, "%s is empty\n", amd_pcsdb_file);
-        return 0;
-    }
-
 
     file = fopen(amd_pcsdb_file, "r");
 
@@ -1087,17 +1080,9 @@ static int check_vendor_bus_id_xorg_conf(struct device **devices, int cards_n,
     FILE *file;
     struct stat stbuf;
 
-    /* If file doesn't exist */
-    if (stat(xorg_conf_file, &stbuf) == -1) {
-        fprintf(log_handle, "can't access %s\n", xorg_conf_file);
+    /* If file doesn't exist or is empty */
+    if (!exists_not_empty(xorg_conf_file))
         return 0;
-    }
-    /* If file is empty */
-    if ((stbuf.st_mode & S_IFMT) && ! stbuf.st_size) {
-        fprintf(log_handle, "%s is empty\n", xorg_conf_file);
-        return 0;
-    }
-
 
     file = fopen(xorg_conf_file, "r");
 
@@ -1606,16 +1591,9 @@ static int add_gpu_bus_from_dmesg(const char *pattern, struct device **devices,
     if (dry_run && fake_dmesg_path) {
         struct stat stbuf;
 
-        /* If file doesn't exist */
-        if (stat(fake_dmesg_path, &stbuf) == -1) {
-            fprintf(log_handle, "can't access %s\n", fake_dmesg_path);
+        /* If file doesn't exist or is empty */
+        if (!exists_not_empty(fake_dmesg_path))
             return 0;
-        }
-        /* If file is empty */
-        if ((stbuf.st_mode & S_IFMT) && ! stbuf.st_size) {
-            fprintf(log_handle, "%s is empty\n", fake_dmesg_path);
-            return 0;
-        }
 
         sprintf(command, "grep %s %s",
                 pattern, fake_dmesg_path);
@@ -1723,22 +1701,188 @@ static int is_dir_empty(char *directory) {
 }
 
 
-static int is_laptop (void) {
-    /* We only support laptops by default,
-     * you can override this check by creating
-     * the /etc/force-pxpress file
+/* Count the number of outputs connected to the card */
+int count_connected_outputs(int fd, drmModeResPtr res) {
+    int i;
+    int connected_outputs = 0;
+    drmModeConnectorPtr connector;
+
+    for (i = 0; i < res->count_connectors; i++) {
+        connector = drmModeGetConnector(fd, res->connectors[i]);
+
+        if (connector) {
+            switch (connector->connection) {
+            case DRM_MODE_CONNECTED:
+                fprintf(log_handle, "output %d:\n", connected_outputs);
+                connected_outputs += 1;
+
+                switch (connector->connector_type) {
+                case DRM_MODE_CONNECTOR_Unknown:
+                    fprintf(log_handle, "\tunknown connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_VGA:
+                    fprintf(log_handle, "\tVGA connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_DVII:
+                    fprintf(log_handle, "\tDVII connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_DVID:
+                    fprintf(log_handle, "\tDVID connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_DVIA:
+                    fprintf(log_handle, "\tDVIA connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_Composite:
+                    fprintf(log_handle, "\tComposite connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_SVIDEO:
+                    fprintf(log_handle, "\tSVIDEO connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_LVDS:
+                    fprintf(log_handle, "\tLVDS connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_Component:
+                    fprintf(log_handle, "\tComponent connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_9PinDIN:
+                    fprintf(log_handle, "\t9PinDIN connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_DisplayPort:
+                    fprintf(log_handle, "\tDisplayPort connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_HDMIA:
+                    fprintf(log_handle, "\tHDMIA connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_HDMIB:
+                    fprintf(log_handle, "\tHDMIB connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_TV:
+                    fprintf(log_handle, "\tTV connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_eDP:
+                    fprintf(log_handle, "\teDP connector\n");
+                    break;
+#if 0
+                case DRM_MODE_CONNECTOR_VIRTUAL:
+                    fprintf(log_handle, "VIRTUAL connector\n");
+                    break;
+                case DRM_MODE_CONNECTOR_DSI:
+                    fprintf(log_handle, "DSI connector\n");
+                    break;
+#endif
+                default:
+                    break;
+                }
+
+
+                break;
+            case DRM_MODE_DISCONNECTED:
+                break;
+            default:
+                break;
+            }
+            drmModeFreeConnector(connector);
+        }
+    }
+    return connected_outputs;
+}
+
+
+/* See if the drm device created by a driver has any connected outputs. */
+static int has_driver_connected_outputs(const char *driver) {
+    char path[20];
+    int fd = 1;
+    drmModeResPtr res;
+    drmVersionPtr version;
+    int connected_outputs = 0;
+    int driver_match = 0;
+    int it;
+
+    /* Keep looking until we find the device for the driver */
+    for (it = 0; fd != -1; it++) {
+        sprintf(path, "/dev/dri/card%d", it);
+        fd = open(path, O_RDWR);
+        if (fd) {
+            if ((version = drmGetVersion(fd))) {
+                /* Let's use strstr to catch the different backported
+                 * kernel modules
+                 */
+                if (driver && strstr(version->name, driver) != NULL) {
+                    fprintf(log_handle, "Found \"%s\", driven by \"%s\"\n",
+                           path, version->name);
+                    driver_match = 1;
+                    drmFreeVersion(version);
+                    break;
+                }
+                else {
+                    fprintf(log_handle, "Skipping \"%s\", driven by \"%s\"\n",
+                            path, version->name);
+                    drmFreeVersion(version);
+                    close(fd);
+                }
+            }
+        }
+        else {
+            fprintf(log_handle, "Error: can't open fd for %s\n", path);
+            break;
+        }
+    }
+
+    if (!driver_match)
+        return 0;
+
+    res = drmModeGetResources(fd);
+    if (!res) {
+        fprintf(log_handle, "Error: can't get drm resources.\n");
+        drmClose(fd);
+        return 0;
+    }
+
+
+    connected_outputs = count_connected_outputs(fd, res);
+
+    fprintf(log_handle, "Number of connected outputs for %s: %d\n", path, connected_outputs);
+
+    drmModeFreeResources(res);
+
+    close(fd);
+
+    return (connected_outputs > 0);
+}
+
+
+/* Check if any outputs are still connected to card0.
+ *
+ * By default we only check cards driver by i915.
+ * If so, then claim support for RandR offloading
+ */
+static int requires_offloading(void) {
+
+    /* Let's check only /dev/dri/card0 and look
+     * for driver i915. We don't want to enable
+     * offloading to any other driver, as results
+     * may be unpredictable
      */
-    if (is_file(FORCE_LAPTOP)) {
-        fprintf(log_handle, "Forcing laptop mode as per %s\n", FORCE_LAPTOP);
+    return(has_driver_connected_outputs("i915"));
+}
+
+
+/* Set permanent settings for offloading */
+static int set_offloading(void) {
+    FILE *file;
+
+    if (dry_run)
+        return 1;
+
+    file = fopen(OFFLOADING_CONF, "w");
+    if (file != NULL) {
+        fprintf(file, "ON\n");
+        fflush(file);
+        fclose(file);
         return 1;
     }
-    else {
-        if (! is_dir_empty("/sys/class/power_supply/") &&
-            is_dir("/proc/acpi/button/lid"))
-            return 1;
-        else
-            return 0;
-    }
+
+    return 0;
 }
 
 
@@ -2066,7 +2210,7 @@ int main(int argc, char *argv[]) {
     char *fake_lspci_file = NULL;
     char *new_boot_file = NULL;
 
-    static int fake_laptop = 0;
+    static int fake_offloading = 0;
 
     int has_intel = 0, has_amd = 0, has_nvidia = 0;
     int has_changed = 0;
@@ -2075,7 +2219,7 @@ int main(int argc, char *argv[]) {
         intel_loaded = 0, radeon_loaded = 0,
         nouveau_loaded = 0, bbswitch_loaded = 0;
     int fglrx_unloaded = 0, nvidia_unloaded = 0;
-    int laptop = 0;
+    int offloading = 0;
     int status = 0;
 
     /* Vendor and device id (boot vga) */
@@ -2108,8 +2252,8 @@ int main(int argc, char *argv[]) {
         {
         /* These options set a flag. */
         {"dry-run", no_argument,     &dry_run, 1},
-        {"fake-laptop", no_argument, &fake_laptop, 1},
-        {"fake-desktop", no_argument, &fake_laptop, 0},
+        {"fake-requires-offloading", no_argument, &fake_offloading, 1},
+        {"fake-no-requires-offloading", no_argument, &fake_offloading, 0},
         {"fake-lightdm", no_argument, &fake_lightdm, 1},
         /* These options don't set a flag.
           We distinguish them by their indices. */
@@ -2373,13 +2517,19 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* Either simulate or check if dealing with a laptop */
+    /* Either simulate or check if dealing with a system than requires RandR offloading */
     if (fake_lspci_file)
-        laptop = fake_laptop;
+        offloading = fake_offloading;
     else
-        laptop = is_laptop();
+        offloading = requires_offloading();
 
-    fprintf(log_handle, "Is laptop? %s\n", (laptop ? "yes" : "no"));
+    fprintf(log_handle, "Does it require offloading? %s\n", (offloading ? "yes" : "no"));
+
+    /* Remove a file that will tell other apps such as
+     * nvidia-prime if we need to offload rendering.
+     */
+    if (!offloading && !dry_run)
+        unlink(OFFLOADING_CONF);
 
     bbswitch_loaded = is_module_loaded("bbswitch");
     nvidia_loaded = is_module_loaded("nvidia");
@@ -2567,7 +2717,7 @@ int main(int argc, char *argv[]) {
 
         if (boot_vga_vendor_id == INTEL) {
             /* AMD PowerXpress */
-            if (laptop && fglrx_unloaded) {
+            if (offloading && fglrx_unloaded) {
                 fprintf(log_handle, "PowerXpress detected\n");
 
                 /* Get the BusID of the disabled discrete from dmesg */
@@ -2582,7 +2732,7 @@ int main(int argc, char *argv[]) {
                 /* No further action */
                 goto end;
             }
-            else if (laptop && nvidia_unloaded) {
+            else if (offloading && nvidia_unloaded) {
                 /* NVIDIA PRIME */
                 fprintf(log_handle, "PRIME detected\n");
 
@@ -2598,6 +2748,10 @@ int main(int argc, char *argv[]) {
                 enable_prime(prime_settings, bbswitch_loaded,
                              discrete_vendor_id, alternative,
                              current_devices, cards_n);
+
+                /* Write permanent settings about offloading */
+                set_offloading();
+
                 goto end;
             }
             else {
@@ -2711,21 +2865,25 @@ int main(int argc, char *argv[]) {
         if (boot_vga_vendor_id == INTEL) {
             fprintf(log_handle, "Intel IGP detected\n");
             /* AMD PowerXpress */
-            if (laptop && intel_loaded && fglrx_loaded && !radeon_loaded) {
+            if (offloading && intel_loaded && fglrx_loaded && !radeon_loaded) {
                 fprintf(log_handle, "PowerXpress detected\n");
 
                 enable_pxpress(current_devices, cards_n);
             }
             /* NVIDIA Optimus */
-            else if (laptop && (intel_loaded && !nouveau_loaded &&
+            else if (offloading && (intel_loaded && !nouveau_loaded &&
                                 (alternative->nvidia_available ||
                                  alternative->prime_available) &&
                                  nvidia_loaded)) {
-                fprintf(log_handle, "Intel hybrid laptop\n");
+                fprintf(log_handle, "Intel hybrid system\n");
 
                 enable_prime(prime_settings, bbswitch_loaded,
                              discrete_vendor_id, alternative,
                              current_devices, cards_n);
+
+                /* Write permanent settings about offloading */
+                set_offloading();
+
                 goto end;
             }
             else {
@@ -2827,7 +2985,7 @@ int main(int argc, char *argv[]) {
         }
         /* AMD */
         else if (boot_vga_vendor_id == AMD) {
-            /* Either AMD+AMD hybrid laptop or AMD desktop APU + discrete card */
+            /* Either AMD+AMD hybrid system or AMD desktop APU + discrete card */
             fprintf(log_handle, "AMD IGP detected\n");
             if (discrete_vendor_id == AMD) {
                 fprintf(log_handle, "Discrete AMD card detected\n");

@@ -62,8 +62,7 @@
 
 #define PCIINFOCLASSES(c) \
     ( (((c) & 0x00ff0000) \
-     == (PCI_CLASS_DISPLAY << 16))  \
-     && (((c) & 0x00ffff00) != (PCI_CLASS_DISPLAY_OTHER << 8)) )
+     == (PCI_CLASS_DISPLAY << 16)) )
 
 #define LAST_BOOT "/var/lib/ubuntu-drivers-common/last_gfx_boot"
 #define OFFLOADING_CONF "/var/lib/ubuntu-drivers-common/requires_offloading"
@@ -832,7 +831,6 @@ static int is_pxpress_dgpu_disabled() {
     /* We don't need a huge buffer */
     char line[100];
     FILE *file;
-    struct stat stbuf;
 
     if (!exists_not_empty(amd_pcsdb_file))
         return 0;
@@ -1078,7 +1076,6 @@ static int check_vendor_bus_id_xorg_conf(struct device **devices, int cards_n,
     char line[4096];
     char bus_id[256];
     FILE *file;
-    struct stat stbuf;
 
     /* If file doesn't exist or is empty */
     if (!exists_not_empty(xorg_conf_file))
@@ -1589,8 +1586,6 @@ static int add_gpu_bus_from_dmesg(const char *pattern, struct device **devices,
     FILE *pfile = NULL;
 
     if (dry_run && fake_dmesg_path) {
-        struct stat stbuf;
-
         /* If file doesn't exist or is empty */
         if (!exists_not_empty(fake_dmesg_path))
             return 0;
@@ -1698,6 +1693,29 @@ static int is_dir_empty(char *directory) {
         return 1;
     else
         return 0;
+}
+
+static int is_link(char *file) {
+    struct stat stbuf;
+
+    if (lstat(file, &stbuf) == -1) {
+        fprintf(log_handle, "Error: can't access %s\n", file);
+        return 0;
+    }
+    if ((stbuf.st_mode & S_IFMT) == S_IFLNK)
+        return 1;
+
+    return 0;
+}
+
+
+/* See if the device is bound to a driver */
+static int is_device_bound_to_driver(struct pci_device *info) {
+    char sysfs_path[256];
+    sprintf(sysfs_path, "/sys/bus/pci/devices/%04x:%02x:%02x.%d/driver",
+            info->domain, info->bus, info->dev, info->func);
+
+    return(is_link(sysfs_path));
 }
 
 
@@ -2582,8 +2600,14 @@ int main(int argc, char *argv[]) {
         while ((info = pci_device_next(iter)) != NULL) {
             if (PCIINFOCLASSES(info->device_class)) {
                 fprintf(log_handle, "Vendor/Device Id: %x:%x\n", info->vendor_id, info->device_id);
-                fprintf(log_handle, "BusID \"PCI:%x:%x:%x\"\n", info->bus, info->dev, info->func);
+                fprintf(log_handle, "BusID \"PCI:%d@%d:%d:%d\"\n",
+                        (int)info->bus, (int)info->domain, (int)info->dev, (int)info->func);
                 fprintf(log_handle, "Is boot vga? %s\n", (pci_device_is_boot_vga(info) ? "yes" : "no"));
+
+                if (!is_device_bound_to_driver(info)) {
+                    fprintf(log_handle, "The device is not bound to any driver. Skipping...\n");
+                    continue;
+                }
 
                 /* char *driver = NULL; */
                 if (info->vendor_id == NVIDIA) {

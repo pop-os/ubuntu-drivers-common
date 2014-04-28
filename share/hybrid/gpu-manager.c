@@ -950,7 +950,9 @@ static int check_prime_xorg_conf(struct device **devices,
                 if ((istrstr(line, "AllowEmptyInitialConfiguration") != NULL &&
                     istrstr(line, "on") != NULL) ||
                     (istrstr(line, "ConstrainCursor") != NULL &&
-                    istrstr(line, "off") != NULL)) {
+                    istrstr(line, "off") != NULL) ||
+                    (istrstr(line, "IgnoreDisplayDevices") != NULL &&
+                    istrstr(line, "CRT") != NULL)) {
                     x_options_matches += 1;
                 }
             }
@@ -962,7 +964,7 @@ static int check_prime_xorg_conf(struct device **devices,
             }
             /* The driver has to be either intel or nvidia */
             else if (istrstr(line, "Driver") != NULL) {
-                if (istrstr(line, "modesetting") != NULL){
+                if (istrstr(line, "intel") != NULL){
                     intel_set += 1;
                 }
                 else if (istrstr(line, "nvidia") != NULL) {
@@ -1225,7 +1227,7 @@ static int write_prime_xorg_conf(struct device **devices, int cards_n) {
             fprintf(pfile,
                 "Section \"Device\"\n"
                 "    Identifier \"intel\"\n"
-                "    Driver \"modesetting\"\n"
+                "    Driver \"intel\"\n"
                 "    BusID \"PCI:%d@%d:%d:%d\"\n"
                 "EndSection\n\n"
                 "Section \"Screen\"\n"
@@ -1249,6 +1251,7 @@ static int write_prime_xorg_conf(struct device **devices, int cards_n) {
                 "    Identifier \"nvidia\"\n"
                 "    Device \"nvidia\"\n"
                 "    Option \"AllowEmptyInitialConfiguration\" \"on\"\n"
+                "    Option \"IgnoreDisplayDevices\" \"CRT\"\n"
                 "EndSection\n\n",
                (int)(devices[i]->bus),
                (int)(devices[i]->domain),
@@ -1485,9 +1488,11 @@ static int read_data_from_file(struct device **devices,
     FILE *pfile = NULL;
     /* The number of digits we expect to match per line */
     int desired_matches = 7;
+    int created = 1;
 
     pfile = fopen(filename, "r");
     if (pfile == NULL) {
+        created = 2;
         fprintf(log_handle, "I couldn't open %s for reading.\n", filename);
         /* Create the file for the 1st time */
         pfile = fopen(filename, "w");
@@ -1524,7 +1529,7 @@ static int read_data_from_file(struct device **devices,
     }
 
     fclose(pfile);
-    return 1;
+    return created;
 }
 
 
@@ -2270,6 +2275,7 @@ int main(int argc, char *argv[]) {
 
     int has_intel = 0, has_amd = 0, has_nvidia = 0;
     int has_changed = 0;
+    int first_boot = 0;
     int has_moved_xorg_conf = 0;
     int nvidia_loaded = 0, fglrx_loaded = 0,
         intel_loaded = 0, radeon_loaded = 0,
@@ -2695,6 +2701,8 @@ int main(int argc, char *argv[]) {
         fprintf(log_handle, "Can't read %s\n", last_boot_file);
         goto end;
     }
+    else if (status == 2)
+        first_boot = 1;
 
     fprintf(log_handle, "last cards number = %d\n", last_cards_n);
 
@@ -2899,7 +2907,7 @@ int main(int argc, char *argv[]) {
         }
 
         /* Move away xorg.conf */
-        if (has_changed) {
+        if (has_changed && !first_boot) {
             /* Either a desktop or a muxed laptop */
             fprintf(log_handle, "System configuration has changed\n");
 

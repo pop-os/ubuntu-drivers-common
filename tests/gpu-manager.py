@@ -159,7 +159,7 @@ class GpuManagerTest(unittest.TestCase):
         self.fake_alternatives = open(self.fake_alternatives.name, 'w')
         '''
         self.remove_xorg_conf()
-        self.remove_amd_pcsdb_file()
+        #self.remove_amd_pcsdb_file()
 
     def tearDown(self):
         print(self.this_function_name, 'over')
@@ -568,7 +568,6 @@ class GpuManagerTest(unittest.TestCase):
         self.bbswitch_quirks_path.write('''
 "ThinkPad T410" "skip_optimus_dsm=1"
 "ThinkPad T410s" "skip_optimus_dsm=1"
-"Vostro 20 3015" "skip_optimus_dsm=1"
         ''')
         self.bbswitch_quirks_path.close()
 
@@ -3199,8 +3198,8 @@ class GpuManagerTest(unittest.TestCase):
         self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
         self.amd_pcsdb_file.write('''
 FAKESETTINGS=BLAH
-FAKEGPUSETTINGS=BLAHBLAH''')
-
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V4''')
         self.amd_pcsdb_file.close()
 
         # Collect data
@@ -3225,8 +3224,8 @@ FAKEGPUSETTINGS=BLAHBLAH''')
         self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
         self.amd_pcsdb_file.write('''
 FAKESETTINGS=BLAH
-FAKEGPUSETTINGS=BLAHBLAH''')
-
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V4''')
         self.amd_pcsdb_file.close()
 
         self.xorg_file = open(self.xorg_file.name, 'w')
@@ -3294,8 +3293,8 @@ EndSection
         self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
         self.amd_pcsdb_file.write('''
 FAKESETTINGS=BLAH
-FAKEGPUSETTINGS=BLAHBLAH''')
-
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V4''')
         self.amd_pcsdb_file.close()
 
         self.xorg_file = open(self.xorg_file.name, 'w')
@@ -3365,8 +3364,7 @@ EndSection
         self.amd_pcsdb_file.write('''
 FAKESETTINGS=BLAH
 FAKEGPUSETTINGS=BLAHBLAH
-PX_GPUDOWN=R00010000''')
-
+EnabledFlags=V0''')
         self.amd_pcsdb_file.close()
 
         self.xorg_file = open(self.xorg_file.name, 'w')
@@ -3425,16 +3423,20 @@ EndSection
         self.assertFalse(gpu_test.has_removed_xorg)
         self.assertFalse(gpu_test.has_regenerated_xorg)
         # We should select pxpress here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_selected_driver)
 
-        # No further action is required
-        self.assertTrue(gpu_test.has_not_acted)
+        self.assertFalse(gpu_test.has_not_acted)
 
 
         # Let's create a case where the discrete
         # GPU is disabled, fglrx was unloaded, and xorg.conf
         # is correct
+        self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
+        self.amd_pcsdb_file.write('''
+FAKESETTINGS=BLAH
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V0''')
+        self.amd_pcsdb_file.close()
 
         # Only intel should show up
 
@@ -3501,15 +3503,20 @@ EndSection
         self.assertFalse(gpu_test.has_removed_xorg)
         self.assertFalse(gpu_test.has_regenerated_xorg)
         # We should select pxpress here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_selected_driver)
 
         # No further action is required
-        self.assertTrue(gpu_test.has_not_acted)
+        self.assertFalse(gpu_test.has_not_acted)
 
         # Let's create a case where the discrete
         # GPU is disabled, fglrx was unloaded, and xorg.conf
         # is incorrect
+        self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
+        self.amd_pcsdb_file.write('''
+FAKESETTINGS=BLAH
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V0''')
+        self.amd_pcsdb_file.close()
 
         self.xorg_file = open(self.xorg_file.name, 'w')
         self.xorg_file.write('''
@@ -3567,9 +3574,8 @@ EndSection
         self.assertFalse(gpu_test.has_changed)
         self.assertTrue(gpu_test.has_removed_xorg)
         self.assertTrue(gpu_test.has_regenerated_xorg)
-        # We should select pxpress here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+
+        self.assertTrue(gpu_test.has_selected_driver)
 
         # No further action is required
         self.assertFalse(gpu_test.has_not_acted)
@@ -3660,8 +3666,7 @@ EndSection
         self.assertTrue(gpu_test.has_removed_xorg)
         self.assertTrue(gpu_test.has_regenerated_xorg)
         # We should select the driver here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_selected_driver)
 
         # No further action is required
         self.assertFalse(gpu_test.has_not_acted)
@@ -3669,6 +3674,12 @@ EndSection
 
         # Case 1d: the discrete card is now available (BIOS)
         #          pxpress is enabled and the module is loaded
+        self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
+        self.amd_pcsdb_file.write('''
+FAKESETTINGS=BLAH
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V4''')
+        self.amd_pcsdb_file.close()
 
         # Collect data
         gpu_test = self.run_manager_and_get_data(['intel'],
@@ -3709,9 +3720,7 @@ EndSection
         self.assertTrue(gpu_test.has_regenerated_xorg)
         # Select fglrx, as the discrete GPU
         # is not disabled
-        # We should select the driver here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_selected_driver)
 
         # No further action is required
         self.assertFalse(gpu_test.has_not_acted)
@@ -3719,6 +3728,12 @@ EndSection
 
         # Case 1e: the discrete card is now available (BIOS)
         #          pxpress is enabled but the module is not loaded
+        self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
+        self.amd_pcsdb_file.write('''
+FAKESETTINGS=BLAH
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V0''')
+        self.amd_pcsdb_file.close()
 
         # Collect data
         gpu_test = self.run_manager_and_get_data(['intel'],
@@ -3804,8 +3819,7 @@ EndSection
         self.assertTrue(gpu_test.has_removed_xorg)
         self.assertTrue(gpu_test.has_regenerated_xorg)
         # We should select the driver here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_selected_driver)
 
         # No further action is required
         self.assertFalse(gpu_test.has_not_acted)
@@ -3813,6 +3827,12 @@ EndSection
 
         # Case 2a: the discrete card was already available (BIOS)
         #          the driver is enabled and the module is loaded
+        self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
+        self.amd_pcsdb_file.write('''
+FAKESETTINGS=BLAH
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V4''')
+        self.amd_pcsdb_file.close()
 
         # Collect data
         gpu_test = self.run_manager_and_get_data(['intel', 'amd'],
@@ -3859,6 +3879,12 @@ EndSection
 
         # Case 2b: the discrete card was already available (BIOS)
         #          the driver is enabled but the module is not loaded
+        self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
+        self.amd_pcsdb_file.write('''
+FAKESETTINGS=BLAH
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V4''')
+        self.amd_pcsdb_file.close()
 
         # Collect data
         gpu_test = self.run_manager_and_get_data(['intel', 'amd'],
@@ -3905,6 +3931,12 @@ EndSection
 
         # Case 2c: the discrete card was already available (BIOS)
         #          the driver is not enabled but the module is loaded
+        self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
+        self.amd_pcsdb_file.write('''
+FAKESETTINGS=BLAH
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V4''')
+        self.amd_pcsdb_file.close()
 
         # Collect data
         gpu_test = self.run_manager_and_get_data(['intel', 'amd'],
@@ -3944,8 +3976,7 @@ EndSection
         self.assertTrue(gpu_test.has_removed_xorg)
         self.assertTrue(gpu_test.has_regenerated_xorg)
         # We should select the driver here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_selected_driver)
 
         # No further action is required
         self.assertFalse(gpu_test.has_not_acted)
@@ -3953,6 +3984,12 @@ EndSection
 
         # Case 2d: the discrete card was already available (BIOS)
         #          pxpress is enabled and the module is loaded
+        self.amd_pcsdb_file = open(self.amd_pcsdb_file.name, 'w')
+        self.amd_pcsdb_file.write('''
+FAKESETTINGS=BLAH
+FAKEGPUSETTINGS=BLAHBLAH
+EnabledFlags=V4''')
+        self.amd_pcsdb_file.close()
 
         # Collect data
         gpu_test = self.run_manager_and_get_data(['intel', 'amd'],
@@ -3992,8 +4029,7 @@ EndSection
         self.assertTrue(gpu_test.has_removed_xorg)
         self.assertTrue(gpu_test.has_regenerated_xorg)
         # We should select the driver here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_selected_driver)
 
         # No further action is required
         self.assertFalse(gpu_test.has_not_acted)
@@ -4086,8 +4122,7 @@ EndSection
         self.assertTrue(gpu_test.has_removed_xorg)
         self.assertTrue(gpu_test.has_regenerated_xorg)
         # We should select the driver here
-        # but we won't for now
-        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_selected_driver)
 
         # No further action is required
         self.assertFalse(gpu_test.has_not_acted)
@@ -5479,7 +5514,7 @@ EndSection
         # What if dmi product version is invalid?
 
         # Set dmi product version
-        self.set_dmi_product_version('')
+        self.set_dmi_product_version(' ')
 
         # Set default quirks
         self.set_bbswitch_quirks()
@@ -5508,10 +5543,10 @@ EndSection
         # name is not?
 
         # Set dmi product version
-        self.set_dmi_product_version('')
+        self.set_dmi_product_version(' ')
 
         # Set dmi product name
-        self.set_dmi_product_name('Vostro 20 3015')
+        self.set_dmi_product_name('ThinkPad T410s')
 
         # Set default quirks
         self.set_bbswitch_quirks()

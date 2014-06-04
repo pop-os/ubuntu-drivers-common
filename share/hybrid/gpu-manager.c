@@ -356,10 +356,15 @@ static int load_bbswitch() {
     char *params = NULL;
     char *temp_params = NULL;
     char basic[] = "load_state=-1 unload_state=1";
+    char skip_dsm[] = "skip_optimus_dsm=1";
+    int success = 0;
+    int quirked = 0;
 
     temp_params = get_params_from_quirks();
     if (!temp_params) {
         params = strdup(basic);
+        if (!params)
+            return 0;
     }
     else {
         params = malloc(strlen(temp_params) + strlen(basic) + 2);
@@ -370,10 +375,45 @@ static int load_bbswitch() {
         strcat(params, temp_params);
 
         free(temp_params);
+        quirked = 1;
     }
 
+    /* 1st try */
+    fprintf(log_handle, "1st try: bbswitch %s quirks\n", quirked ? "with" : "without");
+    success = load_module_with_params("bbswitch", params);
 
-    return (load_module_with_params("bbswitch", params));
+    if (!success) {
+        /* 2nd try */
+        fprintf(log_handle, "2nd try: bbswitch %s quirks\n", quirked ? "without" : "with");
+
+        /* params was freed as a consequence of
+         * load_module_with_params()
+         */
+        params = NULL;
+
+        if (quirked) {
+            /* The quirk failed. Try without */
+            params = strdup(basic);
+            if (!params)
+                return 0;
+        }
+        else {
+            /* Maybe the system hasn't been quirked yet
+             * or its DMI is invalid. Let's try with
+             * skip_optimus_dsm=1
+             */
+            params = malloc(strlen(skip_dsm) + strlen(basic) + 2);
+            if (!params)
+                return 0;
+            strcpy(params, basic);
+            strcat(params, " ");
+            strcat(params, skip_dsm);
+        }
+
+        success = load_module_with_params("bbswitch", params);
+    }
+
+    return success;
 }
 
 
@@ -1007,7 +1047,9 @@ static int check_prime_xorg_conf(struct device **devices,
                     (istrstr(line, "ConstrainCursor") != NULL &&
                     istrstr(line, "off") != NULL) ||
                     (istrstr(line, "IgnoreDisplayDevices") != NULL &&
-                    istrstr(line, "CRT") != NULL)) {
+                    istrstr(line, "CRT") != NULL) ||
+                    (istrstr(line, "AccelMethod") != NULL &&
+                    istrstr(line, "SNA") != NULL)) {
                     x_options_matches += 1;
                 }
             }
@@ -1019,7 +1061,7 @@ static int check_prime_xorg_conf(struct device **devices,
             }
             /* The driver has to be either intel or nvidia */
             else if (istrstr(line, "Driver") != NULL) {
-                if (istrstr(line, "modesetting") != NULL){
+                if (istrstr(line, "intel") != NULL){
                     intel_set += 1;
                 }
                 else if (istrstr(line, "nvidia") != NULL) {
@@ -1282,8 +1324,9 @@ static int write_prime_xorg_conf(struct device **devices, int cards_n) {
             fprintf(pfile,
                 "Section \"Device\"\n"
                 "    Identifier \"intel\"\n"
-                "    Driver \"modesetting\"\n"
+                "    Driver \"intel\"\n"
                 "    BusID \"PCI:%d@%d:%d:%d\"\n"
+                "    Option \"AccelMethod\" \"SNA\"\n"
                 "EndSection\n\n"
                 "Section \"Screen\"\n"
                 "    Identifier \"intel\"\n"

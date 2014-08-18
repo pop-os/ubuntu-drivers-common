@@ -1,3 +1,17 @@
+ubuntu-drivers-common (1:0.2.97) utopic; urgency=medium
+
+  * tests/testarchive.py: Organize debs in pool/ structure, for better
+    reusability.
+  * tests/ubuntu_drivers.py: Drop expected failures, they've succeeded for a
+    long time. This needs to be fixed properly if there's a bug.
+  * sl-modem plugin: Keep environment for aplay, just ensure it's using the C
+    locale. (LP: #1296425)
+  * Disable linux-firmware-nonfree autopkgtest for now. bcma does not declare
+    any firmware dependencies and linux-firmware-nonfree does not declare
+    modaliases, so it either just works now, or the driver needs fixing first.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Mon, 18 Aug 2014 10:13:11 +0200
+
 ubuntu-drivers-common (1:0.2.96.1) utopic; urgency=medium
 
   * gpu-manager.c:

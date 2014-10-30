@@ -1,0 +1,12 @@
+diff -Naur ubuntu-drivers-common-0.2.91.7-orig/share/hybrid/gpu-manager.c ubuntu-drivers-common-0.2.91.7-fixed/share/hybrid/gpu-manager.c
+--- ubuntu-drivers-common-0.2.91.7-orig/share/hybrid/gpu-manager.c	2014-09-01 19:50:36.000000000 +0200
++++ ubuntu-drivers-common-0.2.91.7-fixed/share/hybrid/gpu-manager.c	2014-10-16 22:12:21.043646283 +0200
+@@ -549,7 +549,7 @@
+     else {
+         fprintf(stderr, "%s is not a file\n", modprobe_d_path);
+         snprintf(command, sizeof(command),
+-                 "grep -G \"blacklist.*%s[[:space:]]*$\" %s/*",
++                 "grep -G \"^blacklist.*%s[[:space:]]*$\" %s/*.conf",
+                  module, modprobe_d_path);
+ 
+         match = get_output(command, NULL, NULL);

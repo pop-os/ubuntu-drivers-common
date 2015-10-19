@@ -705,7 +705,7 @@ static bool has_unloaded_module(char *module) {
         fprintf(log_handle, "grep fake dmesg status %d\n", status);
     }
     else {
-        snprintf(command, sizeof(command), "dmesg | grep -q \"%s: module\"",
+        snprintf(command, sizeof(command), "grep -q \"%s: module\" /var/log/syslog",
                  module);
         status = system(command);
         fprintf(log_handle, "grep dmesg status %d\n", status);
@@ -1078,8 +1078,12 @@ static prime_intel_drv get_prime_intel_driver() {
         driver = UXA;
         fprintf(log_handle, "Detected boot parameter to force Intel/UXA\n");
     }
-    else {
+    else if (has_cmdline_option("gpumanager_sna")) {
         driver = SNA;
+        fprintf(log_handle, "Detected boot parameter to force Intel/SNA\n");
+    }
+    else {
+        driver = MODESETTING;
     }
 
     return driver;
@@ -1426,6 +1430,10 @@ static bool check_prime_xorg_conf(struct device **devices,
                         (istrstr(line, "UXA") == NULL)) {
                         accel_method_matches = false;
                     }
+                    else if ((prime_intel_driver == MODESETTING) &&
+                        (istrstr(line, "None") == NULL)) {
+                        accel_method_matches = false;
+                    }
                     else {
                         x_options_matches += 1;
                     }
@@ -1732,7 +1740,8 @@ static bool write_prime_xorg_conf(struct device **devices, int cards_n) {
 
     switch (prime_intel_driver) {
     case MODESETTING:
-        accel_method = strdup("");
+        /* glamor seems to fail. Set to "none" instead */
+        accel_method = strdup("    Option \"AccelMethod\" \"None\"\n");
         break;
     case UXA:
         accel_method = strdup("    Option \"AccelMethod\" \"UXA\"\n");
@@ -2185,7 +2194,7 @@ static int add_gpu_bus_from_dmesg(const char *pattern, struct device **devices,
                  pattern, fake_dmesg_path);
     }
     else {
-        snprintf(command, sizeof(command), "dmesg | grep %s", pattern);
+        snprintf(command, sizeof(command), "grep %s /var/log/syslog", pattern);
     }
 
     pfile = popen(command, "r");

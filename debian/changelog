@@ -1,3 +1,15 @@
+ubuntu-drivers-common (1:0.4.12) xenial; urgency=medium
+
+  [ Alberto Milone ]
+  * UbuntuDrivers/detect.py:
+    - Make modalias matching case insensitive (LP: #1500591).
+
+  [ Martin Pitt ]
+  * debian/tests/system: Explicitly require version 1.0 of UMockdev, to avoid
+    a warning on stderr.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Mon, 26 Oct 2015 11:03:09 +0100
+
 ubuntu-drivers-common (1:0.4.11) wily; urgency=medium
 
   * gpu-manager.c:

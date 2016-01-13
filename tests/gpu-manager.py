@@ -40,6 +40,8 @@ class GpuTest(object):
                  fglrx_unloaded=False,
                  radeon_loaded=False,
                  radeon_unloaded=False,
+                 amdgpu_loaded=False,
+                 amdgpu_unloaded=False,
                  has_nvidia=False,
                  nouveau_loaded=False,
                  nouveau_unloaded=False,
@@ -58,6 +60,7 @@ class GpuTest(object):
                  has_selected_driver=False,
                  has_not_acted=True,
                  has_skipped_hybrid=False,
+                 has_added_gpu_from_file=False,
                  proprietary_installer=False,
                  matched_quirk=False,
                  loaded_with_args=False):
@@ -69,6 +72,8 @@ class GpuTest(object):
         self.has_amd = has_amd
         self.radeon_loaded = radeon_loaded
         self.radeon_unloaded = radeon_unloaded
+        self.amdgpu_loaded = amdgpu_loaded
+        self.amdgpu_unloaded = amdgpu_unloaded
         self.fglrx_loaded = fglrx_loaded
         self.fglrx_unloaded = fglrx_unloaded
         self.has_nvidia = has_nvidia
@@ -89,6 +94,7 @@ class GpuTest(object):
         self.has_selected_driver = has_selected_driver
         self.has_not_acted = has_not_acted
         self.has_skipped_hybrid = has_skipped_hybrid
+        self.has_added_gpu_from_file = has_added_gpu_from_file
         self.proprietary_installer = proprietary_installer
         self.matched_quirk = matched_quirk
         self.loaded_with_args = loaded_with_args
@@ -114,8 +120,9 @@ class GpuManagerTest(unittest.TestCase):
         klass.fake_alternatives.close()
         klass.fake_core_alternatives = tempfile.NamedTemporaryFile(mode='w', dir=tests_path, delete=False)
         klass.fake_core_alternatives.close()
-        klass.fake_dmesg = tempfile.NamedTemporaryFile(mode='w', dir=tests_path, delete=False)
-        klass.fake_dmesg.close()
+        klass.gpu_detection_path = tests_path or "/tmp"
+        klass.module_detection_file = tests_path or "/tmp"
+        klass.gpu_detection_file = tests_path or "/tmp"
         klass.prime_settings = tempfile.NamedTemporaryFile(mode='w', dir=tests_path, delete=False)
         klass.prime_settings.close()
         klass.bbswitch_path = tempfile.NamedTemporaryFile(mode='w', dir=tests_path, delete=False)
@@ -158,6 +165,7 @@ class GpuManagerTest(unittest.TestCase):
         klass.proprietary_installer_pt = re.compile('Proprietary driver installer detected.*')
         klass.matched_quirk_pt = re.compile('Found matching quirk.*')
         klass.loaded_with_args_pt = re.compile('Loading (.+) with \"(.+)\" parameters.*')
+        klass.has_added_gpu_from_file = re.compile('Adding GPU from file: (.+)')
 
         klass.vendors = {'amd': 0x1002, 'nvidia': 0x10de,
                         'intel': 0x8086, 'unknown': 0x1016}
@@ -218,9 +226,10 @@ class GpuManagerTest(unittest.TestCase):
             except:
                 pass
 
-    def remove_fake_dmesg(self):
+    def remove_gpu_detection_file(self):
         try:
-            os.unlink(self.fake_dmesg.name)
+            os.unlink(self.module_detection_file)
+            os.unlink(self.gpu_detection_file)
         except:
             pass
 
@@ -244,7 +253,8 @@ class GpuManagerTest(unittest.TestCase):
             self.fake_modules,
             self.fake_alternatives,
             self.fake_core_alternatives,
-            self.fake_dmesg,
+            self.module_detection_file,
+            self.gpu_detection_file,
             self.prime_settings,
             self.bbswitch_path,
             self.bbswitch_quirks_path,
@@ -262,8 +272,12 @@ class GpuManagerTest(unittest.TestCase):
                 pass
 
             if copy:
-                # Copy to target dir
-                self.cp_to_target_dir(file.name)
+                try:
+                    # Copy to target dir
+                    self.cp_to_target_dir(file.name)
+                except AttributeError:
+                    # If it's just a file path
+                    self.cp_to_target_dir(file)
 
             if delete:
                 try:
@@ -308,8 +322,8 @@ class GpuManagerTest(unittest.TestCase):
                    self.fake_alternatives.name,
                    '--fake-core-alternatives-path',
                    self.fake_core_alternatives.name,
-                   '--fake-dmesg-path',
-                   self.fake_dmesg.name,
+                   '--gpu-detection-path',
+                   self.gpu_detection_path,
                    '--prime-settings',
                    self.prime_settings.name,
                    '--bbswitch-path',
@@ -343,18 +357,7 @@ class GpuManagerTest(unittest.TestCase):
             print("\n%s" % self.this_function_name)
             print(' '.join(command_))
 
-        #devnull = open('/dev/null', 'w')
-
-        #p1 = subprocess.Popen(command, stdout=devnull,
-        #                      stderr=devnull, universal_newlines=True)
-
-        #print ' '.join(command)
         os.system(' '.join(command))
-
-        #p1 = subprocess.Popen(command, universal_newlines=True)
-        #p = p1.communicate()[0]
-
-        #devnull.close()
 
         if valgrind:
             self.valgrind_log = open(self.valgrind_log.name, 'r')
@@ -404,6 +407,7 @@ class GpuManagerTest(unittest.TestCase):
             no_action = self.no_action_pt.match(line)
             has_skipped_hybrid = self.has_skipped_hybrid_pt.match(line)
             proprietary_installer = self.proprietary_installer_pt.match(line)
+            has_added_gpu_from_file = self.has_added_gpu_from_file.match(line)
 
             # Detect the vendor
             if has_changed:
@@ -425,6 +429,8 @@ class GpuManagerTest(unittest.TestCase):
                     gpu_test.intel_loaded = (is_driver_loaded.group(2).strip().lower() == 'yes')
                 elif is_driver_loaded.group(1).strip().lower() == 'radeon':
                     gpu_test.radeon_loaded = (is_driver_loaded.group(2).strip().lower() == 'yes')
+                elif is_driver_loaded.group(1).strip().lower() == 'amdgpu':
+                    gpu_test.amdgpu_loaded = (is_driver_loaded.group(2).strip().lower() == 'yes')
                 elif is_driver_loaded.group(1).strip().lower() == 'fglrx':
                     gpu_test.fglrx_loaded = (is_driver_loaded.group(2).strip().lower() == 'yes')
             elif is_driver_unloaded:
@@ -436,6 +442,8 @@ class GpuManagerTest(unittest.TestCase):
                     gpu_test.intel_unloaded = (is_driver_unloaded.group(2).strip().lower() == 'yes')
                 elif is_driver_unloaded.group(1).strip().lower() == 'radeon':
                     gpu_test.radeon_unloaded = (is_driver_unloaded.group(2).strip().lower() == 'yes')
+                elif is_driver_unloaded.group(1).strip().lower() == 'amdgpu':
+                    gpu_test.amdgpu_unloaded = (is_driver_unloaded.group(2).strip().lower() == 'yes')
                 elif is_driver_unloaded.group(1).strip().lower() == 'fglrx':
                     gpu_test.fglrx_unloaded = (is_driver_unloaded.group(2).strip().lower() == 'yes')
             # Detect the alternative
@@ -482,6 +490,8 @@ class GpuManagerTest(unittest.TestCase):
             elif has_skipped_hybrid:
                 gpu_test.has_skipped_hybrid = True
                 gpu_test.has_not_acted = True
+            elif has_added_gpu_from_file:
+                gpu_test.has_added_gpu_from_file = True
             elif loaded_and_enabled:
                 gpu_test.has_selected_driver = False
             elif proprietary_installer:
@@ -509,8 +519,8 @@ class GpuManagerTest(unittest.TestCase):
         # Remove xorg.conf
         self.remove_xorg_conf()
 
-        # Remove fake dmesg
-        self.remove_fake_dmesg()
+        # Remove fake gpu detection file
+        self.remove_gpu_detection_file()
 
         # Remove amd_pcsdb_file
         self.remove_amd_pcsdb_file()
@@ -639,39 +649,22 @@ class GpuManagerTest(unittest.TestCase):
         self.modprobe_d_path.write('blacklist %s\n' % module)
         self.modprobe_d_path.close()
 
-    def set_unloaded_module_in_dmesg(self, module):
+    def set_unloaded_module(self, module):
         if module:
-            self.fake_dmesg = open(self.fake_dmesg.name, 'w')
-            if module == 'nvidia':
-                self.fake_dmesg.write('[   18.017267] nvidia: module license '
-                                      '\'NVIDIA\' taints kernel.\n')
-                self.fake_dmesg.write('[   18.019886] nvidia: module verification '
-                                      'failed: signature and/or  required key '
-                                      'missing - tainting kernel\n')
-                self.fake_dmesg.write('[   18.022845] nvidia 0000:01:00.0: '
-                                      'enabling device (0000 -> 0003)\n')
-                self.fake_dmesg.write('[   18.689111] [drm] Initialized nvidia-drm '
-                                      '0.0.0 20130102 for 0000:01:00.0 on minor 1\n')
-                self.fake_dmesg.write('[   35.604564] init: Failed to spawn '
-                                      'nvidia-persistenced main process: unable to '
-                                      'execute: No such file or directory\n')
-            elif module == 'fglrx':
-                self.fake_dmesg.write('fglrx: module license \'Proprietary. (C) 2002 - '
-                                      'ATI Technologies, Starnberg, GERMANY\' taints kernel.')
-                self.fake_dmesg.write('[   23.462986] fglrx_pci 0000:01:00.0: '
-                                      'Max Payload Size 16384, but upstream 0000:00:01.0 '
-                                      'set to 128; if necessary, use "pci=pcie_bus_safe" '
-                                      'and report a bug\n')
-                self.fake_dmesg.write('[   23.462994] fglrx_pci 0000:01:00.0: no hotplug '
-                                      'settings from platform\n')
-                self.fake_dmesg.write('[   23.467552] waiting module removal not supported: '
-                                      'please upgrade<6>[fglrx] module unloaded - fglrx '
-                                      '13.35.5 [Jan 29 2014]\n')
-            else:
-                self.fake_dmesg.write('[   23.462972] %s: module license '
-                                  '\'Proprietary. (C) blah blah\'\n' % module)
-            self.fake_dmesg.close()
+            self.module_detection_file = "%s/u-d-c-%s-was-loaded" % (self.gpu_detection_path, module)
+            module_file = open(self.module_detection_file, 'w')
+            module_file.close()
 
+            if module == 'nvidia':
+                vendor = self.vendors["nvidia"]
+            elif module == 'fglrx':
+                vendor = self.vendors["amd"]
+            else:
+                vendor = 0x8086
+            self.gpu_detection_file = "%s/u-d-c-gpu-0000:01:00.0-0x%04x-0x1140" % (self.gpu_detection_path, vendor)
+
+            gpu_file = open(self.gpu_detection_file, 'w')
+            gpu_file.close()
 
 
     def set_params(self, last_boot, current_boot,
@@ -705,7 +698,7 @@ class GpuManagerTest(unittest.TestCase):
         self.add_kernel_modules(loaded_modules)
         # Optional unloaded kernel module
         if unloaded_module:
-            self.set_unloaded_module_in_dmesg(unloaded_module)
+            self.set_unloaded_module(unloaded_module)
 
         # Available alternatives
         self.fake_alternatives = open(self.fake_alternatives.name, 'w')
@@ -814,6 +807,7 @@ class GpuManagerTest(unittest.TestCase):
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -854,6 +848,7 @@ class GpuManagerTest(unittest.TestCase):
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -926,6 +921,7 @@ class GpuManagerTest(unittest.TestCase):
         self.assertTrue(gpu_test.has_amd)
         # No radeon
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -1187,6 +1183,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -1239,6 +1236,7 @@ EndSection
         self.assertFalse(gpu_test.has_amd)
         # No radeon
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -1284,6 +1282,7 @@ EndSection
         self.assertTrue(gpu_test.has_amd)
         # No radeon
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.fglrx_blacklisted)
@@ -1362,6 +1361,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -1402,6 +1402,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -1449,6 +1450,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -1493,6 +1495,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -1575,6 +1578,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         # No NVIDIA
         self.assertFalse(gpu_test.has_nvidia)
@@ -1617,6 +1621,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         # No NVIDIA
         self.assertFalse(gpu_test.has_nvidia)
@@ -1664,6 +1669,7 @@ EndSection
         self.assertTrue(gpu_test.has_amd)
         #The open driver is blacklisted
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         # No kernel module
         self.assertFalse(gpu_test.fglrx_loaded)
         # No NVIDIA
@@ -1707,6 +1713,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -1749,6 +1756,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -1792,6 +1800,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -1834,6 +1843,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -1879,6 +1889,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -1928,6 +1939,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         # The binary driver is loaded and enabled
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
@@ -1972,6 +1984,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         # The kernel module of the binary driver
         # is not loaded
         self.assertFalse(gpu_test.fglrx_loaded)
@@ -2022,6 +2035,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         # The binary driver is loaded and enabled
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
@@ -2067,6 +2081,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         # The kernel module of the binary driver
         # is not loaded
         self.assertFalse(gpu_test.fglrx_loaded)
@@ -2117,6 +2132,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -2161,6 +2177,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # NVIDIA
@@ -2203,6 +2220,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2245,6 +2263,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2289,6 +2308,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2332,6 +2352,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2384,6 +2405,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2427,6 +2449,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2487,6 +2510,47 @@ EndSection
         self.assertFalse(gpu_test.has_selected_driver)
         self.assertTrue(gpu_test.has_not_acted)
 
+        # Same card supported by amdgpu
+
+        # Collect data
+        gpu_test = self.run_manager_and_get_data(['amd'],
+                                                 ['amd'],
+                                                 ['amdgpu', 'fake_alt'],
+                                                 ['mesa'],
+                                                 'mesa')
+
+        # Check the variables
+
+        # Check if laptop
+        self.assertFalse(gpu_test.requires_offloading)
+
+        self.assertTrue(gpu_test.has_single_card)
+
+        # No Intel
+        self.assertFalse(gpu_test.has_intel)
+        self.assertFalse(gpu_test.intel_loaded)
+
+        # Mesa is enabled
+        self.assertTrue(gpu_test.mesa_enabled)
+        # AMD
+        self.assertTrue(gpu_test.has_amd)
+        self.assertTrue(gpu_test.amdgpu_loaded)
+        self.assertFalse(gpu_test.fglrx_loaded)
+        self.assertFalse(gpu_test.fglrx_enabled)
+        # No NVIDIA
+        self.assertFalse(gpu_test.has_nvidia)
+        self.assertFalse(gpu_test.nouveau_loaded)
+        self.assertFalse(gpu_test.nvidia_loaded)
+        self.assertFalse(gpu_test.nvidia_enabled)
+        # Has not changed
+        self.assertFalse(gpu_test.has_changed)
+        # Don't touch xorg.conf
+        self.assertFalse(gpu_test.has_removed_xorg)
+        self.assertFalse(gpu_test.has_regenerated_xorg)
+        # Nothing to select
+        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertTrue(gpu_test.has_not_acted)
+
 
         # Different card
 
@@ -2513,6 +2577,47 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertTrue(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.fglrx_loaded)
+        self.assertFalse(gpu_test.fglrx_enabled)
+        # No NVIDIA
+        self.assertFalse(gpu_test.has_nvidia)
+        self.assertFalse(gpu_test.nouveau_loaded)
+        self.assertFalse(gpu_test.nvidia_loaded)
+        self.assertFalse(gpu_test.nvidia_enabled)
+        # Has changed
+        self.assertTrue(gpu_test.has_changed)
+        # We remove the xorg.conf
+        self.assertTrue(gpu_test.has_removed_xorg)
+        self.assertFalse(gpu_test.has_regenerated_xorg)
+        # Nothing to select
+        self.assertFalse(gpu_test.has_selected_driver)
+        self.assertFalse(gpu_test.has_not_acted)
+
+        # Different card supported by amdgpu
+
+        # Collect data
+        gpu_test = self.run_manager_and_get_data(['amd'],
+                                                 ['amd'],
+                                                 ['amdgpu', 'fake_alt'],
+                                                 ['mesa'],
+                                                 'mesa',
+                                                 bump_boot_vga_device_id=True)
+        # Check the variables
+
+        # Check if laptop
+        self.assertFalse(gpu_test.requires_offloading)
+
+        self.assertTrue(gpu_test.has_single_card)
+
+        # No Intel
+        self.assertFalse(gpu_test.has_intel)
+        self.assertFalse(gpu_test.intel_loaded)
+
+        # Mesa is enabled
+        self.assertTrue(gpu_test.mesa_enabled)
+        # AMD
+        self.assertTrue(gpu_test.has_amd)
+        self.assertTrue(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2558,6 +2663,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2646,6 +2752,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2688,6 +2795,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2731,6 +2839,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2775,6 +2884,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2817,6 +2927,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2858,6 +2969,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2898,6 +3010,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -2938,6 +3051,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -3156,6 +3270,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -3200,6 +3315,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -3417,6 +3533,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -3543,6 +3660,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -3590,6 +3708,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4025,6 +4144,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4070,6 +4190,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4122,6 +4243,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -4176,6 +4298,7 @@ EnabledFlags=V0''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -4222,6 +4345,7 @@ EnabledFlags=V0''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4275,6 +4399,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4327,6 +4452,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4379,6 +4505,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4432,6 +4559,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -4479,6 +4607,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -4525,6 +4654,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4572,6 +4702,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4617,6 +4748,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4662,6 +4794,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4710,6 +4843,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -4755,6 +4889,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -4800,6 +4935,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4847,6 +4983,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4891,6 +5028,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4935,6 +5073,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -4979,6 +5118,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -5026,6 +5166,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -5071,6 +5212,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5116,6 +5258,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5160,6 +5303,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5204,6 +5348,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5248,6 +5393,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -5292,6 +5438,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -5336,6 +5483,7 @@ EnabledFlags=V4''')
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5380,6 +5528,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5423,6 +5572,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5466,6 +5616,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5509,6 +5660,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -5552,6 +5704,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -5595,6 +5748,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5640,6 +5794,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5682,6 +5837,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5724,6 +5880,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -5766,6 +5923,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5807,6 +5965,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -5848,6 +6007,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         # No NVIDIA
@@ -5909,6 +6069,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6019,6 +6180,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6070,6 +6232,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6120,6 +6283,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6171,6 +6335,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6223,6 +6388,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6270,6 +6436,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6322,6 +6489,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6375,6 +6543,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6426,6 +6595,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6477,6 +6647,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6528,6 +6699,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6580,6 +6752,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6625,6 +6798,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6667,6 +6841,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6718,6 +6893,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6770,6 +6946,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6813,6 +6990,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6856,6 +7034,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6899,6 +7078,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6942,6 +7122,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -6988,6 +7169,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7029,6 +7211,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7072,6 +7255,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7116,6 +7300,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7159,6 +7344,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7202,6 +7388,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7245,6 +7432,7 @@ EnabledFlags=V4''')
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7285,6 +7473,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7325,6 +7514,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7368,6 +7558,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7411,6 +7602,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7454,6 +7646,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7497,6 +7690,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7545,6 +7739,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7587,6 +7782,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7629,6 +7825,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7671,6 +7868,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7713,6 +7911,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7755,6 +7954,7 @@ EndSection
         # No AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7800,6 +8000,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7841,6 +8042,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7882,6 +8084,7 @@ EndSection
         # No AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -7925,6 +8128,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -7968,6 +8172,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -8011,6 +8216,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8054,6 +8260,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8094,6 +8301,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8140,6 +8348,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8183,6 +8392,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8226,6 +8436,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8269,6 +8480,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -8312,6 +8524,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -8360,6 +8573,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8402,6 +8616,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8444,6 +8659,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8486,6 +8702,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -8528,6 +8745,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -8570,6 +8788,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8617,6 +8836,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8659,6 +8879,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8701,6 +8922,7 @@ EndSection
         # No AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8745,6 +8967,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -8789,6 +9012,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -8833,6 +9057,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8877,6 +9102,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8918,6 +9144,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -8965,6 +9192,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -9009,6 +9237,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -9053,6 +9282,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -9097,6 +9327,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -9141,6 +9372,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -9190,6 +9422,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -9233,6 +9466,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -9276,6 +9510,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -9319,6 +9554,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -9362,6 +9598,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -9405,6 +9642,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -9490,6 +9728,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -9507,6 +9746,89 @@ EndSection
         # No further action is required
         self.assertFalse(gpu_test.has_not_acted)
 
+        # Same tests, only with amdgpu
+
+        # Case 2a: the discrete card is now available (BIOS)
+        #          the driver is enabled and the module is loaded
+        gpu_test = self.run_manager_and_get_data(['amd'],
+                                                 ['amd', 'amd'],
+                                                 ['amdgpu', 'fake'],
+                                                 ['mesa'],
+                                                 'mesa')
+
+        # Check the variables
+
+        # Check if laptop
+        self.assertFalse(gpu_test.requires_offloading)
+
+        self.assertFalse(gpu_test.has_single_card)
+
+        # Intel
+        self.assertFalse(gpu_test.has_intel)
+        self.assertFalse(gpu_test.intel_loaded)
+
+        # Mesa is enabled
+        self.assertTrue(gpu_test.mesa_enabled)
+        # AMD
+        self.assertTrue(gpu_test.has_amd)
+        self.assertTrue(gpu_test.amdgpu_loaded)
+        self.assertFalse(gpu_test.fglrx_loaded)
+        self.assertFalse(gpu_test.fglrx_enabled)
+        self.assertFalse(gpu_test.pxpress_enabled)
+        # No NVIDIA
+        self.assertFalse(gpu_test.has_nvidia)
+        self.assertFalse(gpu_test.nouveau_loaded)
+        self.assertFalse(gpu_test.nvidia_loaded)
+        self.assertFalse(gpu_test.nvidia_enabled)
+        # Has changed
+        self.assertTrue(gpu_test.has_changed)
+        self.assertTrue(gpu_test.has_removed_xorg)
+        self.assertFalse(gpu_test.has_regenerated_xorg)
+        self.assertFalse(gpu_test.has_selected_driver)
+        # No further action is required
+        self.assertFalse(gpu_test.has_not_acted)
+
+
+        # What if amdgpu is blacklisted
+        gpu_test = self.run_manager_and_get_data(['amd'],
+                                                 ['amd', 'amd'],
+                                                 ['fake_old', 'fake'],
+                                                 ['mesa'],
+                                                 'mesa')
+
+        # Check the variables
+
+        # Check if laptop
+        self.assertFalse(gpu_test.requires_offloading)
+
+        self.assertFalse(gpu_test.has_single_card)
+
+        # Intel
+        self.assertFalse(gpu_test.has_intel)
+        self.assertFalse(gpu_test.intel_loaded)
+
+        # Mesa is enabled
+        self.assertTrue(gpu_test.mesa_enabled)
+        # AMD
+        self.assertTrue(gpu_test.has_amd)
+        #self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
+        self.assertFalse(gpu_test.fglrx_loaded)
+        self.assertFalse(gpu_test.fglrx_enabled)
+        self.assertFalse(gpu_test.pxpress_enabled)
+        # No NVIDIA
+        self.assertFalse(gpu_test.has_nvidia)
+        self.assertFalse(gpu_test.nouveau_loaded)
+        self.assertFalse(gpu_test.nvidia_loaded)
+        self.assertFalse(gpu_test.nvidia_enabled)
+        # Has changed
+        self.assertTrue(gpu_test.has_changed)
+        self.assertTrue(gpu_test.has_removed_xorg)
+        self.assertFalse(gpu_test.has_regenerated_xorg)
+        # We'll probably use vesa + llvmpipe
+        self.assertFalse(gpu_test.has_selected_driver)
+        # No further action is required
+        self.assertFalse(gpu_test.has_not_acted)
 
     def test_laptop_two_amd_open(self):
         '''laptop Multiple AMD GPUs radeon'''
@@ -9578,6 +9900,93 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
+        self.assertFalse(gpu_test.fglrx_loaded)
+        self.assertFalse(gpu_test.fglrx_enabled)
+        self.assertFalse(gpu_test.pxpress_enabled)
+        # No NVIDIA
+        self.assertFalse(gpu_test.has_nvidia)
+        self.assertFalse(gpu_test.nouveau_loaded)
+        self.assertFalse(gpu_test.nvidia_loaded)
+        self.assertFalse(gpu_test.nvidia_enabled)
+        # Has changed
+        self.assertTrue(gpu_test.has_changed)
+        self.assertTrue(gpu_test.has_removed_xorg)
+        self.assertFalse(gpu_test.has_regenerated_xorg)
+        # We'll probably use vesa + llvmpipe
+        self.assertFalse(gpu_test.has_selected_driver)
+        # No further action is required
+        self.assertFalse(gpu_test.has_not_acted)
+
+        # Now with amdgpu
+
+        # Case 1a: the discrete card is now available (BIOS)
+        #          the driver is enabled and the module is loaded
+        gpu_test = self.run_manager_and_get_data(['amd'],
+                                                 ['amd', 'amd'],
+                                                 ['amdgpu', 'fake'],
+                                                 ['mesa'],
+                                                 'mesa',
+                                                 requires_offloading=True)
+
+        # Check the variables
+
+        # Check if laptop
+        self.assertTrue(gpu_test.requires_offloading)
+
+        self.assertFalse(gpu_test.has_single_card)
+
+        # Intel
+        self.assertFalse(gpu_test.has_intel)
+        self.assertFalse(gpu_test.intel_loaded)
+
+        # Mesa is enabled
+        self.assertTrue(gpu_test.mesa_enabled)
+        # AMD
+        self.assertTrue(gpu_test.has_amd)
+        self.assertTrue(gpu_test.amdgpu_loaded)
+        self.assertFalse(gpu_test.fglrx_loaded)
+        self.assertFalse(gpu_test.fglrx_enabled)
+        self.assertFalse(gpu_test.pxpress_enabled)
+        # No NVIDIA
+        self.assertFalse(gpu_test.has_nvidia)
+        self.assertFalse(gpu_test.nouveau_loaded)
+        self.assertFalse(gpu_test.nvidia_loaded)
+        self.assertFalse(gpu_test.nvidia_enabled)
+        # Has changed
+        self.assertTrue(gpu_test.has_changed)
+        self.assertTrue(gpu_test.has_removed_xorg)
+        self.assertFalse(gpu_test.has_regenerated_xorg)
+        self.assertFalse(gpu_test.has_selected_driver)
+        # No further action is required
+        self.assertFalse(gpu_test.has_not_acted)
+
+
+        # What if amdgpu is blacklisted
+        gpu_test = self.run_manager_and_get_data(['amd'],
+                                                 ['amd', 'amd'],
+                                                 ['fake_old', 'fake'],
+                                                 ['mesa'],
+                                                 'mesa',
+                                                 requires_offloading=True)
+
+        # Check the variables
+
+        # Check if laptop
+        self.assertTrue(gpu_test.requires_offloading)
+
+        self.assertFalse(gpu_test.has_single_card)
+
+        # Intel
+        self.assertFalse(gpu_test.has_intel)
+        self.assertFalse(gpu_test.intel_loaded)
+
+        # Mesa is enabled
+        self.assertTrue(gpu_test.mesa_enabled)
+        # AMD
+        self.assertTrue(gpu_test.has_amd)
+        #self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10374,6 +10783,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10415,6 +10825,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10456,6 +10867,7 @@ EndSection
         # No AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10499,6 +10911,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -10542,6 +10955,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -10585,6 +10999,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10628,6 +11043,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10668,6 +11084,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10708,6 +11125,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10751,6 +11169,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertTrue(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10794,6 +11213,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -10837,6 +11257,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertTrue(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -10880,6 +11301,7 @@ EndSection
         # AMD
         self.assertTrue(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertTrue(gpu_test.pxpress_enabled)
@@ -11044,6 +11466,7 @@ EndSection
         # AMD
         self.assertFalse(gpu_test.has_amd)
         self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
         self.assertFalse(gpu_test.fglrx_loaded)
         self.assertFalse(gpu_test.fglrx_enabled)
         self.assertFalse(gpu_test.pxpress_enabled)
@@ -11060,6 +11483,62 @@ EndSection
         # No further action is required
         self.assertTrue(gpu_test.has_not_acted)
 
+    def test_disabled_gpu_detection(self):
+        self.this_function_name = sys._getframe().f_code.co_name
+
+        # Case 3c: the discrete card is no longer available (bbswitch)
+        #          prime is enabled and the module is not loaded
+
+        # Set default bbswitch status
+        self.set_prime_discrete_default_status_on(False)
+
+        # Request action from bbswitch
+        self.request_prime_discrete_on(False)
+
+        gpu_test = self.run_manager_and_get_data(['intel', 'nvidia'],
+                                                 ['intel'],
+                                                 ['i915', 'fake'],
+                                                 ['mesa', 'nvidia'],
+                                                 'prime',
+                                                 unloaded_module='nvidia',
+                                                 requires_offloading=True)
+
+        # Check the variables
+
+        # Check if laptop
+        self.assertTrue(gpu_test.requires_offloading)
+
+        self.assertTrue(gpu_test.has_single_card)
+
+        # Intel
+        self.assertTrue(gpu_test.has_intel)
+        self.assertTrue(gpu_test.intel_loaded)
+
+        # Mesa is not enabled
+        self.assertFalse(gpu_test.mesa_enabled)
+        # No AMD
+        self.assertFalse(gpu_test.has_amd)
+        self.assertFalse(gpu_test.radeon_loaded)
+        self.assertFalse(gpu_test.amdgpu_loaded)
+        self.assertFalse(gpu_test.fglrx_loaded)
+        self.assertFalse(gpu_test.fglrx_enabled)
+        self.assertFalse(gpu_test.pxpress_enabled)
+        # No NVIDIA
+        self.assertFalse(gpu_test.has_nvidia)
+        self.assertFalse(gpu_test.nouveau_loaded)
+        self.assertFalse(gpu_test.nvidia_loaded)
+        self.assertFalse(gpu_test.nvidia_enabled)
+        self.assertTrue(gpu_test.prime_enabled)
+        # Has changed
+        self.assertTrue(gpu_test.has_changed)
+        self.assertTrue(gpu_test.has_removed_xorg)
+        self.assertFalse(gpu_test.has_regenerated_xorg)
+        self.assertFalse(gpu_test.has_selected_driver)
+        # No further action is required
+        self.assertFalse(gpu_test.has_not_acted)
+
+        # Check that the GPU was added from the file
+        self.assertTrue(gpu_test.has_added_gpu_from_file)
 
 
 if __name__ == '__main__':

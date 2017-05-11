@@ -58,6 +58,7 @@
 #include <errno.h>
 #include <linux/limits.h>
 #include <sys/utsname.h>
+#include <libkmod.h>
 #include "xf86drm.h"
 #include "xf86drmMode.h"
 
@@ -80,6 +81,7 @@ static inline void pclosep(FILE **);
 #define OFFLOADING_CONF "/var/lib/ubuntu-drivers-common/requires_offloading"
 #define XORG_CONF "/etc/X11/xorg.conf"
 #define KERN_PARAM "nogpumanager"
+#define AMDGPU_PRO_PX  "/opt/amdgpu-pro/bin/amdgpu-pro-px"
 
 #define AMD 0x1002
 #define INTEL 0x8086
@@ -92,6 +94,13 @@ typedef enum {
     MODESETTING,
     UXA
 } prime_intel_drv;
+
+typedef enum {
+    MODE_POWERSAVING,
+    MODE_PERFORMANCE,
+    RESET,
+    ISPX,
+} amdgpu_pro_px_action;
 
 static char *log_file = NULL;
 static FILE *log_handle = NULL;
@@ -111,7 +120,9 @@ static char *bbswitch_quirks_path = NULL;
 static char *dmi_product_name_path = NULL;
 static char *dmi_product_version_path = NULL;
 static char *nvidia_driver_version_path = NULL;
+static char *amdgpu_pro_px_file = NULL;
 static char *modprobe_d_path = NULL;
+static char *custom_xorg_conf_path = NULL;
 static char *main_arch_path = NULL;
 static char *other_arch_path = NULL;
 static prime_intel_drv prime_intel_driver = SNA;
@@ -1188,6 +1199,139 @@ static prime_intel_drv get_prime_intel_driver() {
     }
 
     return driver;
+}
+
+
+static bool copy_file(const char *src_path, const char *dst_path)
+{
+    _cleanup_fclose_ FILE *src = NULL;
+    _cleanup_fclose_ FILE *dst = NULL;
+    int src_fd, dst_fd;
+    int n = 0;
+    char buf[BUFSIZ];
+
+    src = fopen(src_path, "r");
+    if (src == NULL) {
+        fprintf(log_handle, "error: can't open %s for reading\n", src_path);
+        return false;
+    }
+
+    dst = fopen(dst_path, "w");
+    if (dst == NULL) {
+        fprintf(log_handle, "error: can't open %s for writing.\n",
+                dst_path);
+        return false;
+    }
+
+    src_fd = fileno(src);
+    dst_fd = fileno(dst);
+
+    fprintf(log_handle, "copying %s to %s...\n", src_path, dst_path);
+
+    while ((n = read(src_fd, buf, BUFSIZ)) > 0)
+        if (write(dst_fd, buf, n) != n) {
+            fprintf(log_handle, "write error on file %s\n", dst_path);
+            return false;
+        }
+
+    fprintf(log_handle, "%s was copied successfully to %s\n", src_path, dst_path);
+    return true;
+}
+
+
+static bool get_custom_xorg_name(const char *pattern, char **path)
+{
+    /* Let's accept non exact names only for testing purposes */
+    if (dry_run) {
+        DIR *dir;
+        struct dirent* dir_entry;
+
+        if (NULL == (dir = opendir(custom_xorg_conf_path))) {
+            fprintf(log_handle, "Error : Failed to open %s\n", custom_xorg_conf_path);
+            return false;
+        }
+
+        /* Keep looking until we find the custom xorg.conf with the same
+         * name pattern
+         */
+        while ((dir_entry = readdir(dir))) {
+            if (!starts_with(dir_entry->d_name, pattern))
+                continue;
+
+            *path = malloc(strlen(custom_xorg_conf_path) + strlen(dir_entry->d_name) + 2);
+            if (!*path)
+                return false;
+            fprintf(log_handle, "dir entry: %s\n", dir_entry->d_name);
+            snprintf(*path, sizeof(char) * (strlen(custom_xorg_conf_path) + strlen(dir_entry->d_name) + 2), "%s/%s", custom_xorg_conf_path, dir_entry->d_name);
+            break;
+        }
+        closedir(dir);
+    }
+    else {
+        *path = malloc(strlen(custom_xorg_conf_path) + strlen(pattern) + 2);
+        if (!*path)
+            return false;
+
+        snprintf(*path, sizeof(char) * (strlen(custom_xorg_conf_path) + strlen(pattern) + 2), "%s/%s",
+             custom_xorg_conf_path, pattern);
+    }
+
+    return true;
+}
+
+static bool has_custom_xorg_conf(const char *filename)
+{
+    _cleanup_free_ char *path = NULL;
+
+    get_custom_xorg_name(filename, &path);
+
+    return exists_not_empty(path);
+}
+
+
+static bool has_non_hybrid_conf_file(void)
+{
+    return has_custom_xorg_conf("non-hybrid");
+}
+
+
+static bool has_hybrid_performance_conf_file(void)
+{
+    return has_custom_xorg_conf("hybrid-performance");
+}
+
+
+static bool has_hybrid_power_saving_conf_file(void)
+{
+    return has_custom_xorg_conf("hybrid-power-saving");
+}
+
+
+static bool copy_custom_xorg_conf(const char *filename)
+{
+    _cleanup_free_ char *path = NULL;
+
+    get_custom_xorg_name(filename, &path);
+
+    return copy_file(path, xorg_conf_file);
+}
+
+
+static bool set_non_hybrid_xorg_conf(void)
+{
+    return copy_custom_xorg_conf("non-hybrid");
+}
+
+
+static bool set_hybrid_performance_xorg_conf(void)
+{
+    return copy_custom_xorg_conf("hybrid-performance");
+}
+
+
+static bool set_hybrid_power_saving_xorg_conf(void)
+{
+    return copy_custom_xorg_conf("hybrid-power-saving");
 }
 
 
@@ -2807,10 +2951,17 @@ static bool enable_nvidia(struct alternatives *alternative,
             /* Remove xorg.conf */
             remove_xorg_conf();
 
-            /* Only useful if more than one card is available */
-            if (cards_n > 1) {
-                /* Write xorg.conf */
-                write_to_xorg_conf(devices, cards_n, vendor_id, NULL);
+            /* Use custom xorg.conf for non hybrid systems */
+            if (has_non_hybrid_conf_file()) {
+                fprintf(log_handle, "Custom non-hybrid xorg.conf detected\n");
+                set_non_hybrid_xorg_conf();
+            }
+            else {
+                /* Only useful if more than one card is available */
+                if (cards_n > 1) {
+                    /* Write xorg.conf */
+                    write_to_xorg_conf(devices, cards_n, vendor_id, NULL);
+                }
             }
         }
         else {
@@ -2876,6 +3027,92 @@ static bool get_nvidia_driver_version(int *major, int *minor) {
     }
 
     return true;
+}
+
+
+static char* get_module_version(const char *module_name) {
+    struct kmod_ctx *ctx = NULL;
+    struct kmod_module *mod = NULL;
+    struct kmod_list *l, *list = NULL;
+    int err;
+    char *version = NULL;
+
+    ctx = kmod_new(NULL, NULL);
+    err = kmod_module_new_from_name(ctx, module_name, &mod);
+    if (err < 0) {
+        fprintf(log_handle, "can't acquire module via kmod");
+        goto get_module_version_clean;
+    }
+
+    err = kmod_module_get_info(mod, &list);
+    if (err < 0) {
+        fprintf(log_handle, "can't get module info via kmod");
+        goto get_module_version_clean;
+    }
+
+    kmod_list_foreach(l, list) {
+        const char *key = kmod_module_info_get_key(l);
+
+        if (strcmp(key, "version") == 0) {
+            version = strdup(kmod_module_info_get_value(l));
+            break;
+        }
+    }
+
+get_module_version_clean:
+    if (list)
+        kmod_module_info_free_list(list);
+    if (mod)
+        kmod_module_unref(mod);
+    if (ctx)
+        kmod_unref(ctx);
+
+    return version;
+}
+
+
+static bool is_module_versioned(const char *module_name) {
+    _cleanup_free_ const char *version = NULL;
+
+    if (dry_run)
+        return false;
+
+    version = get_module_version(module_name);
+
+    return version ? true : false;
+}
+
+
+static bool run_amdgpu_pro_px(amdgpu_pro_px_action action) {
+    int status = 0;
+    char command[100];
+
+    switch (action) {
+    case MODE_POWERSAVING:
+        snprintf(command, sizeof(command), "%s --%s", amdgpu_pro_px_file, "mode powersaving");
+        fprintf(log_handle, "Enabling power saving mode for amdgpu-pro");
+        break;
+    case MODE_PERFORMANCE:
+        snprintf(command, sizeof(command), "%s --%s", amdgpu_pro_px_file, "mode performance");
+        fprintf(log_handle, "Enabling performance mode for amdgpu-pro");
+        break;
+    case RESET:
+        snprintf(command, sizeof(command), "%s --%s", amdgpu_pro_px_file, "reset");
+        fprintf(log_handle, "Resetting the script changes for amdgpu-pro");
+        break;
+    case ISPX:
+        snprintf(command, sizeof(command), "%s --%s", amdgpu_pro_px_file, "ispx");
+        break;
+    }
+
+    if (dry_run) {
+        fprintf(log_handle, "%s\n", command);
+        return true;
+    }
+
+    status = system(command);
+
+    return (status == 0);
 }
 
 
@@ -2950,16 +3187,23 @@ static bool enable_prime(const char *prime_settings,
             enable_nvidia(alternative, vendor_id, devices, cards_n);
         }
 
-        if (!check_prime_xorg_conf(devices, cards_n)) {
-            fprintf(log_handle, "Check failed\n");
-
-            /* Remove xorg.conf */
-            remove_xorg_conf();
-            /* Write xorg.conf */
-            write_prime_xorg_conf(devices, cards_n);
+        /* Use custom xorg.conf for performance mode on hybrid systems */
+        if (has_hybrid_performance_conf_file()) {
+            fprintf(log_handle, "Custom hybrid performance xorg.conf detected\n");
+            set_hybrid_performance_xorg_conf();
         }
         else {
-            fprintf(log_handle, "No need to modify xorg.conf. Path: %s\n", xorg_conf_file);
+            if (!check_prime_xorg_conf(devices, cards_n)) {
+                fprintf(log_handle, "Check failed\n");
+
+                /* Remove xorg.conf */
+                remove_xorg_conf();
+                /* Write xorg.conf */
+                write_prime_xorg_conf(devices, cards_n);
+            }
+            else {
+                fprintf(log_handle, "No need to modify xorg.conf. Path: %s\n", xorg_conf_file);
+            }
         }
     }
     else {
@@ -2971,6 +3215,12 @@ static bool enable_prime(const char *prime_settings,
 
         /* Remove xorg.conf */
         remove_xorg_conf();
+
+        /* Use custom xorg.conf for power saving mode on hybrid systems */
+        if (has_hybrid_power_saving_conf_file()) {
+            fprintf(log_handle, "Custom hybrid power saving xorg.conf detected\n");
+            set_hybrid_power_saving_xorg_conf();
+        }
     }
 
     /* This means we need to call bbswitch
@@ -3117,6 +3367,7 @@ int main(int argc, char *argv[]) {
 
     static int fake_offloading = 0;
     static int fake_module_available = 0;
+    static int fake_module_versioned = 0;
     static int backup_log = 0;
 
     bool has_intel = false, has_amd = false, has_nvidia = false;
@@ -3131,7 +3382,11 @@ int main(int argc, char *argv[]) {
     bool fglrx_blacklisted = false, nvidia_blacklisted = false,
          radeon_blacklisted = false, amdgpu_blacklisted = false,
          nouveau_blacklisted = false;
-    bool fglrx_kmod_available = false, nvidia_kmod_available = false;
+    bool fglrx_kmod_available = false, nvidia_kmod_available = false,
+         amdgpu_kmod_available = false;
+    bool amdgpu_versioned = false;
+    bool amdgpu_pro_px_installed = false;
+    bool amdgpu_is_pro = false;
     int offloading = false;
     int status = 0;
 
@@ -3171,6 +3426,7 @@ int main(int argc, char *argv[]) {
         {"fake-module-is-available", no_argument, &fake_module_available, 1},
         {"fake-module-is-not-available", no_argument, &fake_module_available, 0},
         {"backup-log", no_argument, &backup_log, 1},
+        {"fake-module-is-versioned", no_argument, &fake_module_versioned, 1},
         /* These options don't set a flag.
           We distinguish them by their indices. */
         {"log",  required_argument, 0, 'l'},
@@ -3194,12 +3450,14 @@ int main(int argc, char *argv[]) {
         {"dmi-product-name-path", required_argument, 0, 'i'},
         {"nvidia-driver-version-path", required_argument, 0, 'j'},
         {"modprobe-d-path", required_argument, 0, 'k'},
+        {"custom-xorg-conf-path", required_argument, 0, 't'},
+        {"amdgpu-pro-px-file", required_argument, 0, 'w'},
         {0, 0, 0, 0}
         };
         /* getopt_long stores the option index here. */
         int option_index = 0;
 
-        opt = getopt_long (argc, argv, "a:b:c:d:f:g:h:i:j:k:l:m:n:o:p:q:r:s:x:y:z:",
+        opt = getopt_long (argc, argv, "a:b:c:d:f:g:h:i:j:k:l:m:n:o:p:q:r:s:t:x:y:z:w:",
                         long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -3378,6 +3636,16 @@ int main(int argc, char *argv[]) {
                 if (!modprobe_d_path)
                     abort();
                 break;
+            case 't':
+                custom_xorg_conf_path = strdup(optarg);
+                if (!custom_xorg_conf_path)
+                    abort();
+                break;
+            case 'w':
+                amdgpu_pro_px_file = strdup(optarg);
+                if (!amdgpu_pro_px_file)
+                    abort();
+                break;
             case '?':
                 /* getopt_long already printed an error message. */
                 exit(1);
@@ -3527,12 +3795,32 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (amdgpu_pro_px_file)
+        fprintf(log_handle, "amdgpu_pro_px_file file: %s\n", amdgpu_pro_px_file);
+    else {
+        amdgpu_pro_px_file = strdup(AMDGPU_PRO_PX);
+        if (!amdgpu_pro_px_file) {
+            fprintf(log_handle, "Couldn't allocate amdgpu_pro_px_file\n");
+            goto end;
+        }
+    }
+
     if (modprobe_d_path)
         fprintf(log_handle, "modprobe_d_path file: %s\n", modprobe_d_path);
     else {
         modprobe_d_path = strdup("/etc/modprobe.d");
         if (!modprobe_d_path) {
             fprintf(log_handle, "Couldn't allocate modprobe_d_path\n");
+            goto end;
+        }
+    }
+
+    if (custom_xorg_conf_path)
+        fprintf(log_handle, "custom_xorg_conf_path file: %s\n", custom_xorg_conf_path);
+    else {
+        custom_xorg_conf_path = strdup("/usr/share/gpu-manager.d");
+        if (!custom_xorg_conf_path) {
+            fprintf(log_handle, "Couldn't allocate custom_xorg_conf_path\n");
             goto end;
         }
     }
@@ -3552,18 +3840,25 @@ int main(int argc, char *argv[]) {
     radeon_blacklisted = is_module_blacklisted("radeon");
     amdgpu_loaded = is_module_loaded("amdgpu");
     amdgpu_blacklisted = is_module_blacklisted("amdgpu");
+    amdgpu_versioned = is_module_versioned("amdgpu");
+    amdgpu_pro_px_installed = exists_not_empty(amdgpu_pro_px_file);
     nouveau_loaded = is_module_loaded("nouveau");
     nouveau_blacklisted = is_module_blacklisted("nouveau");
+
 
     if (fake_lspci_file) {
         fglrx_kmod_available = fake_module_available;
         nvidia_kmod_available = fake_module_available;
+        amdgpu_kmod_available = fake_module_available;
+        amdgpu_versioned = fake_module_versioned ? true : false;
     }
     else {
         fglrx_kmod_available = is_module_available("fglrx");
         nvidia_kmod_available = is_module_available("nvidia");
+        amdgpu_kmod_available = is_module_available("amdgpu");
     }
 
+    amdgpu_is_pro = amdgpu_kmod_available && amdgpu_versioned;
 
     fprintf(log_handle, "Is nvidia loaded? %s\n", (nvidia_loaded ? "yes" : "no"));
     fprintf(log_handle, "Was nvidia unloaded? %s\n", (nvidia_unloaded ? "yes" : "no"));
@@ -3576,10 +3871,13 @@ int main(int argc, char *argv[]) {
     fprintf(log_handle, "Is radeon blacklisted? %s\n", (radeon_blacklisted ? "yes" : "no"));
     fprintf(log_handle, "Is amdgpu loaded? %s\n", (amdgpu_loaded ? "yes" : "no"));
     fprintf(log_handle, "Is amdgpu blacklisted? %s\n", (amdgpu_blacklisted ? "yes" : "no"));
+    fprintf(log_handle, "Is amdgpu versioned? %s\n", (amdgpu_versioned ? "yes" : "no"));
+    fprintf(log_handle, "Is amdgpu pro stack? %s\n", (amdgpu_is_pro ? "yes" : "no"));
     fprintf(log_handle, "Is nouveau loaded? %s\n", (nouveau_loaded ? "yes" : "no"));
     fprintf(log_handle, "Is nouveau blacklisted? %s\n", (nouveau_blacklisted ? "yes" : "no"));
     fprintf(log_handle, "Is fglrx kernel module available? %s\n", (fglrx_kmod_available ? "yes" : "no"));
     fprintf(log_handle, "Is nvidia kernel module available? %s\n", (nvidia_kmod_available ? "yes" : "no"));
+    fprintf(log_handle, "Is amdgpu kernel module available? %s\n", (amdgpu_kmod_available ? "yes" : "no"));
 
     /* Get the driver to use for intel in an optimus system */
     prime_intel_driver = get_prime_intel_driver();
@@ -3864,6 +4162,15 @@ int main(int argc, char *argv[]) {
                     fprintf(log_handle, "Nothing to do\n");
                 }
             }
+            else if (has_changed && amdgpu_loaded && amdgpu_is_pro && amdgpu_pro_px_installed) {
+                /* If amdgpu-pro-px exists, we can assume it's a pxpress system. But now the
+                 * system has one card only, user probably disabled Switchable Graphics in
+                 * BIOS. So we need to use discrete config file here.
+                 */
+                fprintf(log_handle, "AMDGPU-Pro discrete graphics detected\n");
+
+                run_amdgpu_pro_px(RESET);
+            }
             else {
                 /* If both the closed kernel module and the open
                  * kernel module are loaded, then we're in trouble
@@ -3956,6 +4263,15 @@ int main(int argc, char *argv[]) {
                 fprintf(log_handle, "PowerXpress detected\n");
 
                 enable_pxpress(alternative, current_devices, cards_n);
+            }
+            /* AMDGPU-Pro Switchable */
+            else if (has_changed && amdgpu_loaded && amdgpu_is_pro && amdgpu_pro_px_installed) {
+                /* Similar to switchable enabled -> disabled case, but this time
+                 * to deal with switchable disabled -> enabled change.
+                 */
+                fprintf(log_handle, "AMDGPU-Pro switchable graphics detected\n");
+
+                run_amdgpu_pro_px(MODE_POWERSAVING);
             }
             /* NVIDIA Optimus */
             else if (offloading && (intel_loaded && !nouveau_loaded &&
@@ -4263,8 +4579,14 @@ end:
     if (nvidia_driver_version_path)
         free(nvidia_driver_version_path);
 
+    if (amdgpu_pro_px_file)
+        free(amdgpu_pro_px_file);
+
     if (modprobe_d_path)
         free(modprobe_d_path);
+
+    if (custom_xorg_conf_path)
+        free(custom_xorg_conf_path);
 
     /* Free the devices structs */
     for(i = 0; i < cards_n; i++) {

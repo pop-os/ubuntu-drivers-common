@@ -122,7 +122,7 @@ static char *dmi_product_version_path = NULL;
 static char *nvidia_driver_version_path = NULL;
 static char *amdgpu_pro_px_file = NULL;
 static char *modprobe_d_path = NULL;
-static char *custom_xorg_conf_path = NULL;
+static char *custom_hook_path = NULL;
 static char *main_arch_path = NULL;
 static char *other_arch_path = NULL;
 static prime_intel_drv prime_intel_driver = SNA;
@@ -1239,71 +1239,87 @@ static bool copy_file(const char *src_path, const char *dst_path)
 }
 
 
-static bool get_custom_xorg_name(const char *pattern, char **path)
+static bool get_custom_hook_name(const char *pattern, char **path)
 {
     /* Let's accept non exact names only for testing purposes */
     if (dry_run) {
         DIR *dir;
         struct dirent* dir_entry;
 
-        if (NULL == (dir = opendir(custom_xorg_conf_path))) {
-            fprintf(log_handle, "Error : Failed to open %s\n", custom_xorg_conf_path);
+        if (NULL == (dir = opendir(custom_hook_path))) {
+            fprintf(log_handle, "Error : Failed to open %s\n", custom_hook_path);
             return false;
         }
 
-        /* Keep looking until we find the custom xorg.conf with the same
+        /* Keep looking until we find the custom hook with the same
          * name pattern
          */
         while ((dir_entry = readdir(dir))) {
             if (!starts_with(dir_entry->d_name, pattern))
                 continue;
 
-            *path = malloc(strlen(custom_xorg_conf_path) + strlen(dir_entry->d_name) + 2);
+            *path = malloc(strlen(custom_hook_path) + strlen(dir_entry->d_name) + 2);
             if (!*path)
                 return false;
             fprintf(log_handle, "dir entry: %s\n", dir_entry->d_name);
-            snprintf(*path, sizeof(char) * (strlen(custom_xorg_conf_path) + strlen(dir_entry->d_name) + 2), "%s/%s", custom_xorg_conf_path, dir_entry->d_name);
+            snprintf(*path, sizeof(char) * (strlen(custom_hook_path) + strlen(dir_entry->d_name) + 2), "%s/%s", custom_hook_path, dir_entry->d_name);
             break;
         }
         closedir(dir);
+        if (!*path)
+            return false;
     }
     else {
-        *path = malloc(strlen(custom_xorg_conf_path) + strlen(pattern) + 2);
+        *path = malloc(strlen(custom_hook_path) + strlen(pattern) + 2);
         if (!*path)
             return false;
 
-        snprintf(*path, sizeof(char) * (strlen(custom_xorg_conf_path) + strlen(pattern) + 2), "%s/%s",
-             custom_xorg_conf_path, pattern);
+        snprintf(*path, sizeof(char) * (strlen(custom_hook_path) + strlen(pattern) + 2), "%s/%s",
+             custom_hook_path, pattern);
     }
 
     return true;
 }
 
-static bool has_custom_xorg_conf(const char *filename)
+static bool has_custom_hook(const char *filename)
 {
     _cleanup_free_ char *path = NULL;
 
-    get_custom_xorg_name(filename, &path);
+    bool status = get_custom_hook_name(filename, &path);
 
-    return exists_not_empty(path);
+    return (status ? exists_not_empty(path) : false);
 }
 
 
 static bool has_non_hybrid_conf_file(void)
 {
-    return has_custom_xorg_conf("non-hybrid");
+    return has_custom_hook("non-hybrid");
 }
 
 
 static bool has_hybrid_performance_conf_file(void)
 {
-    return has_custom_xorg_conf("hybrid-performance");
+    return has_custom_hook("hybrid-performance");
 }
 
 
 static bool has_hybrid_power_saving_conf_file(void)
 {
-    return has_custom_xorg_conf("hybrid-power-saving");
+    return has_custom_hook("hybrid-power-saving");
+}
+
+
+static bool has_force_dgpu_on_file(void)
+{
+    _cleanup_free_ char *path = NULL;
+    bool result = false;
+    if (get_custom_hook_name("force-dgpu-on", &path)) {
+        result = is_file(path);
+        if (result)
+            fprintf(log_handle, "force-dgpu-on: %s\n", path);
+    }
+
+    return result;
 }
 
 
@@ -1311,7 +1327,7 @@ static bool copy_custom_xorg_conf(const char *filename)
 {
     _cleanup_free_ char *path = NULL;
 
-    get_custom_xorg_name(filename, &path);
+    get_custom_hook_name(filename, &path);
 
     return copy_file(path, xorg_conf_file);
 }
@@ -2114,7 +2130,6 @@ static bool prime_is_action_on() {
 
 static bool prime_set_discrete(int mode) {
     _cleanup_fclose_ FILE *file = NULL;
-
     file = fopen(bbswitch_path, "w");
     if (!file)
         return false;
@@ -3127,6 +3142,12 @@ static bool enable_prime(const char *prime_settings,
     bool prime_discrete_on = false;
     bool prime_action_on = false;
 
+    /* See if there is a custom hook to disable power saving */
+    bool force_dgpu_on = has_force_dgpu_on_file();
+
+    fprintf(log_handle, "force-dgpu-on hook %s\n",
+            (force_dgpu_on ? "on" : "off"));
+
     /* We only support Lightdm and GDM at this time */
     if (!(is_lightdm_default() || is_gdm_default() || is_sddm_default())) {
         fprintf(log_handle, "Neither Lightdm nor GDM is the default display "
@@ -3166,7 +3187,7 @@ static bool enable_prime(const char *prime_settings,
         }
     }
 
-    if (!bbswitch_loaded) {
+    if (!bbswitch_loaded && !force_dgpu_on) {
         /* Try to load bbswitch */
         /* opts="`/sbin/get-quirk-options`"
         /sbin/modprobe bbswitch load_state=-1 unload_state=1 "$opts" || true */
@@ -3177,8 +3198,13 @@ static bool enable_prime(const char *prime_settings,
     }
 
     /* Get the current status from bbswitch */
-    prime_discrete_on = !bbswitch_status ? true : prime_is_discrete_nvidia_on();
-    /* Get the current settings for discrete */
+    if (!force_dgpu_on)
+        prime_discrete_on = !bbswitch_status ? true : prime_is_discrete_nvidia_on();
+
+    /* Get the current settings for discrete
+     * Note: the force-dgpu-on hook overrides this, and always
+     *       forces the dGPU to be on
+     */
     prime_action_on = prime_is_action_on();
 
     if (prime_action_on) {
@@ -3223,6 +3249,12 @@ static bool enable_prime(const char *prime_settings,
         }
     }
 
+    /* No need for any further action if we are since we want to keep
+     * the dGPU on
+     */
+    if (force_dgpu_on)
+        goto end;
+
     /* This means we need to call bbswitch
      * to take action
      */
@@ -3243,6 +3275,7 @@ static bool enable_prime(const char *prime_settings,
         }
     }
 
+end:
     return true;
 }
 
@@ -3450,7 +3483,7 @@ int main(int argc, char *argv[]) {
         {"dmi-product-name-path", required_argument, 0, 'i'},
         {"nvidia-driver-version-path", required_argument, 0, 'j'},
         {"modprobe-d-path", required_argument, 0, 'k'},
-        {"custom-xorg-conf-path", required_argument, 0, 't'},
+        {"custom-hook-path", required_argument, 0, 't'},
         {"amdgpu-pro-px-file", required_argument, 0, 'w'},
         {0, 0, 0, 0}
         };
@@ -3637,8 +3670,8 @@ int main(int argc, char *argv[]) {
                     abort();
                 break;
             case 't':
-                custom_xorg_conf_path = strdup(optarg);
-                if (!custom_xorg_conf_path)
+                custom_hook_path = strdup(optarg);
+                if (!custom_hook_path)
                     abort();
                 break;
             case 'w':
@@ -3815,12 +3848,12 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (custom_xorg_conf_path)
-        fprintf(log_handle, "custom_xorg_conf_path file: %s\n", custom_xorg_conf_path);
+    if (custom_hook_path)
+        fprintf(log_handle, "custom_hook_path: %s\n", custom_hook_path);
     else {
-        custom_xorg_conf_path = strdup("/usr/share/gpu-manager.d");
-        if (!custom_xorg_conf_path) {
-            fprintf(log_handle, "Couldn't allocate custom_xorg_conf_path\n");
+        custom_hook_path = strdup("/usr/share/gpu-manager.d");
+        if (!custom_hook_path) {
+            fprintf(log_handle, "Couldn't allocate custom_hook_path\n");
             goto end;
         }
     }
@@ -4585,8 +4618,8 @@ end:
     if (modprobe_d_path)
         free(modprobe_d_path);
 
-    if (custom_xorg_conf_path)
-        free(custom_xorg_conf_path);
+    if (custom_hook_path)
+        free(custom_hook_path);
 
     /* Free the devices structs */
     for(i = 0; i < cards_n; i++) {

@@ -12,6 +12,7 @@
 
 import argparse
 import subprocess
+import fnmatch
 import sys
 import os
 import logging
@@ -25,6 +26,7 @@ logger.setLevel(logging.WARNING)
 
 def create_parser():
     '''Create parser for command line arguments.'''
+    deprecated = ('autoinstall',)
 
     # build help for commands
     commands = []
@@ -33,7 +35,8 @@ def create_parser():
         if c.startswith('command_'):
             name = c.split('_', 1)[1]
             commands.append(name)
-            command_help += '\n   %s: %s' % (name, globals()[c].__doc__)
+            if not fnmatch.filter(deprecated, name) :
+                command_help += '\n   %s: %s' % (name, globals()[c].__doc__)
 
     parser = argparse.ArgumentParser(description='List/install driver packages for Ubuntu.',
             epilog=command_help, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -44,10 +47,10 @@ def create_parser():
             help='Create file with list of installed packages (in install mode)')
 
     if sys.version_info.major == 3 and sys.version_info.minor >= 6:
-        parser.add_argument("--gpgpu", const='nvidia', nargs='?', metavar='driver[:version][,driver[:version]]', help="Install GPGPU drivers")
+        parser.add_argument("--gpgpu", const='default', nargs='?', metavar='driver[:version][,driver[:version]]', help="Install GPGPU drivers")
     else:
         # Python 3.5.2 in Xenial will crash when matching square brackets
-        parser.add_argument("--gpgpu", const='nvidia', nargs='?', metavar='driver{:version}{,driver{:version}}', help="Install GPGPU drivers")
+        parser.add_argument("--gpgpu", const='default', nargs='?', metavar='driver{:version}{,driver{:version}}', help="Install GPGPU drivers")
 
     return parser
 
@@ -133,11 +136,22 @@ def command_install(args):
 
 def command_autoinstall(args):
     '''Install drivers that are appropriate for automatic installation. [DEPRECATED]'''
-    logger.warn('DEPRECATED: please use the "install" argument instead of the "autoinstall" argument in the future')
     return command_install(args)
 
 def install_gpgpu(args):
     '''Install GPGPU drivers that are appropriate for your hardware.'''
+
+    # No args, just --gpgpu
+    if args.gpgpu == 'default':
+        not_found_exit_status = 0
+    else:
+        # Just one driver
+        # e.g. --gpgpu 390
+        #      --gpgpu nvidia:390
+        #
+        # Or Multiple drivers
+        # e.g. --gpgpu nvidia:390,amdgpu
+        not_found_exit_status = 1
 
     cache = apt.Cache()
 
@@ -145,7 +159,7 @@ def install_gpgpu(args):
     packages = UbuntuDrivers.detect.gpgpu_install_filter(packages, args.gpgpu)
     if not packages:
         print('No drivers found for installation.')
-        return
+        return not_found_exit_status
 
     # ignore packages which are already installed
     to_install = []
@@ -157,7 +171,7 @@ def install_gpgpu(args):
 
     if not packages:
         print('All the available drivers are already installed.')
-        return
+        return 0
 
     ret = subprocess.call(['apt-get', 'install', '-o',
         'DPkg::options::=--force-confnew', '-y'] + to_install)

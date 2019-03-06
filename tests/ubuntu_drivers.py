@@ -425,14 +425,11 @@ exec /sbin/modinfo "$@"
         '''gpgpu_install_filter()'''
 
         #gpgpu driver[:version][,driver[:version]]
-
         self.assertEqual(UbuntuDrivers.detect.gpgpu_install_filter({}, 'nvidia'), {})
 
         pkgs = {'nvidia-driver-390': {'recommended': True},
                 'nvidia-driver-410': {},
                 'nvidia-driver-340': {'recommended': False}}
-
-        result = set(UbuntuDrivers.detect.gpgpu_install_filter(pkgs, 'nvidia'))
 
         # Nothing is specified, we return the recommended driver
         self.assertEqual(set(UbuntuDrivers.detect.gpgpu_install_filter(pkgs, 'nvidia')),
@@ -455,6 +452,13 @@ exec /sbin/modinfo "$@"
         # Specify the same nvidia driver twice, just to break things
         self.assertEqual(UbuntuDrivers.detect.gpgpu_install_filter(pkgs, 'nvidia:410,nvidia:390'),
                          {})
+
+        # More incorrect values
+        self.assertEqual(UbuntuDrivers.detect.gpgpu_install_filter(pkgs, 'nv:410'), {})
+
+        self.assertEqual(UbuntuDrivers.detect.gpgpu_install_filter(pkgs, ':410'), {})
+
+        self.assertEqual(UbuntuDrivers.detect.gpgpu_install_filter(pkgs, 'nvidia-driver:410'), {})
 
     def test_detect_plugin_packages(self):
         '''detect_plugin_packages()'''

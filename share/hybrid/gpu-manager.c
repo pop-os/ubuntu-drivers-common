@@ -525,44 +525,7 @@ static bool copy_file(const char *src_path, const char *dst_path)
 }
 
 
-/* Open a file and check if it contains "on"
- * or "off".
- *
- * Return false if the file doesn't exist or is empty.
- */
-static bool check_on_off(const char *path) {
-    bool status = false;
-    char line[100];
-    _cleanup_fclose_ FILE *file = NULL;
-
-    file = fopen(path, "r");
-
-    if (!file) {
-        fprintf(log_handle, "Error: can't open %s\n", path);
-        return false;
-    }
-
-    while (fgets(line, sizeof(line), file)) {
-        if (istrstr(line, "on") != NULL) {
-            status = true;
-            break;
-        }
-    }
-
-    return status;
-}
-
-
-/* Get the settings for PRIME.
- *
- * This tells us whether the discrete card should be
- * on or off.
- */
-static bool prime_is_action_on() {
-    return (check_on_off(prime_settings));
-}
-
-
+/* Get prime action, which can be "on", "off", or "on-demand" */
 static void get_prime_action() {
     char line[100];
     _cleanup_fclose_ FILE *file = NULL;
@@ -1031,7 +994,7 @@ static bool is_connector_connected(const char *connector) {
 
 /* Count the number of outputs connected to the card */
 int count_connected_outputs(const char *device_name) {
-    char name[50];
+    char name[PATH_MAX];
     struct dirent *dp;
     DIR *dfd;
     int connected_outputs = 0;
@@ -1050,7 +1013,8 @@ int count_connected_outputs(const char *device_name) {
                     drm_dir, dp->d_name);
         else {
             /* Open the file for the connector */
-            sprintf(name, "%s/%s/status", drm_dir, dp->d_name);
+            snprintf(name, sizeof(name), "%s/%s/status", drm_dir, dp->d_name);
+            name[sizeof(name) - 1] = 0;
             if (is_connector_connected(name)) {
                 fprintf(log_handle, "output %d:\n", connected_outputs);
                 fprintf(log_handle, "\t%s\n", dp->d_name);
@@ -1070,7 +1034,7 @@ int count_connected_outputs(const char *device_name) {
 static int has_driver_connected_outputs(const char *driver) {
     DIR *dir;
     struct dirent* dir_entry;
-    char path[20];
+    char path[PATH_MAX];
     int fd = 1;
     drmVersionPtr version;
     int connected_outputs = 0;
@@ -1089,6 +1053,7 @@ static int has_driver_connected_outputs(const char *driver) {
             continue;
 
         snprintf(path, sizeof(path), "%s/%s", dri_dir, dir_entry->d_name);
+        path[sizeof(path) - 1] = 0;
         fd = open(path, O_RDWR);
         if (fd) {
             if ((version = drmGetVersion(fd))) {
@@ -1704,7 +1669,7 @@ static bool enable_prime(const char *prime_settings,
         create_offload_serverlayout();
         /* Remove the OutputClass */
         remove_prime_outputclass();
-        disable_power_management(device);
+        enable_power_management(device);
         if (!is_module_loaded("nvidia"))
             load_module("nvidia");
     }

@@ -54,25 +54,47 @@ class KernelDetection(object):
         process.communicate()
         return not process.returncode
 
-    def _get_linux_metapackage(self, headers):
-        '''Get the linux headers or linux metapackage'''
-        suffix = headers and '-headers' or ''
-        pattern = re.compile('linux-image-(.+)-([0-9]+)-(.+)')
-        source_pattern = re.compile('linux-(.+)')
+    def _find_reverse_dependencies(self, package, prefix):
+        # prefix to restrict the searching
+        # package we want reverse dependencies for
+        deps = []
+        for pkg in self.apt_cache:
+            if (pkg.name.startswith(prefix) and
+                    'extra' not in pkg.name and
+                    self.apt_cache[pkg.name].is_installed or
+                    self.apt_cache[pkg.name].marked_install):
 
+                try:
+                    dependencies = self.apt_cache[pkg.name].candidate.\
+                             record['Depends']
+                except KeyError:
+                    continue
+
+                if package in dependencies:
+                    deps.append(pkg.name)
+        return deps
+
+    def _get_linux_metapackage(self, target):
+        '''Get the linux headers, linux-image or linux metapackage'''
         metapackage = ''
         version = ''
+        prefix = 'linux-%s' % ('headers' if target == 'headers' else 'image')
+
+        pattern = re.compile('linux-image-(.+)-([0-9]+)-(.+)')
+
         for pkg in self.apt_cache:
-            if ('linux-image' in pkg.name and
+            # We always start with "linux-image"
+            # since installing headers or metapackages
+            # for kernels that are not installed
+            # won't help
+            if (pkg.name.startswith('linux-image') and
                     'extra' not in pkg.name and
                     self.apt_cache[pkg.name].is_installed or
                     self.apt_cache[pkg.name].marked_install):
                 match = pattern.match(pkg.name)
-                # Here we filter out packages such as
-                # linux-generic-lts-quantal
+                # Here we filter out packages other than
+                # the actual image or header packages
                 if match:
-                    source = self.apt_cache[pkg.name].candidate.\
-                             record['Source']
                     current_version = '%s-%s' % (match.group(1),
                                                  match.group(2))
                     # See if the current version is greater than
@@ -80,33 +102,59 @@ class KernelDetection(object):
                     if self._is_greater_than(current_version,
                                              version):
                         version = current_version
-                        match_source = source_pattern.match(source)
-                        # Set the linux-headers metapackage
-                        if '-lts-' in source and match_source:
-                            # This is the case of packages such as
-                            # linux-image-3.5.0-18-generic which
-                            # comes from linux-lts-quantal.
-                            # Therefore the linux-headers-generic
-                            # metapackage would be wrong here and
-                            # we should use
-                            # linux-headers-generic-lts-quantal
-                            # instead
-                            metapackage = 'linux%s-%s-%s' % (
-                                           suffix,
-                                           match.group(3),
-                                           match_source.group(1))
-                        else:
-                            # The scheme linux-headers-$flavour works
-                            # well here
-                            metapackage = 'linux%s-%s' % (
-                                           suffix,
-                                           match.group(3))
+
+        if version:
+            linux_target = '%s-%s' % (prefix, version)
+            reverse_dependencies = self._find_reverse_dependencies(linux_target, prefix)
+
+            if reverse_dependencies:
+                # This should be something like linux-image-$flavour
+                # or linux-headers-$flavour
+                for candidate in reverse_dependencies:
+                    if candidate.startswith(prefix):
+                        metapackage = candidate
+                        break
+
+                # if we are looking for headers, then we are good
+                if target == 'meta':
+                    # Let's get the metapackage
+                    reverse_dependencies = self._find_reverse_dependencies(metapackage, 'linux-')
+
+                    if reverse_dependencies:
+                        # This should be something like linux-$flavour
+                        metapackage = reverse_dependencies[0]
+
         return metapackage
 
     def get_linux_headers_metapackage(self):
         '''Get the linux headers for the newest_kernel installed'''
-        return self._get_linux_metapackage(True)
+        return self._get_linux_metapackage('headers')
+
+    def get_linux_image_metapackage(self):
+        '''Get the linux headers for the newest_kernel installed'''
+        return self._get_linux_metapackage('image')
 
     def get_linux_metapackage(self):
         '''Get the linux metapackage for the newest_kernel installed'''
-        return self._get_linux_metapackage(False)
+        return self._get_linux_metapackage('meta')
+
+    def get_linux_version(self):
+        linux_image_meta = self.get_linux_image_metapackage()
+        linux_version = ''
+        try:
+            dependencies = self.apt_cache[linux_image_meta].candidate.\
+                             record['Depends']
+        except KeyError:
+            logging.error('No dependencies can be found for %s' % (linux_image_meta))
+            return None
+
+        if ', ' in dependencies:
+            deps = dependencies.split(', ')
+            for dep in deps:
+                if dep.startswith('linux-image'):
+                    linux_version = dep.replace('linux-image-', '')
+        else:
+            if dependencies.strip().startswith('linux-image'):
+                linux_version = dependencies.strip().replace('linux-image-', '')
+
+        return linux_version

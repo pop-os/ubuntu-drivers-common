@@ -1,0 +1,43 @@
+--- a/share/hybrid/gpu-manager.c
++++ b/share/hybrid/gpu-manager.c
+@@ -1418,6 +1418,32 @@
+     unlink(xorg_d_custom);
+ }
+ 
++/*
++ * Work around broken power manangement in Linux and NVIDIA drivers.
++ * See: https://download.nvidia.com/XFree86/Linux-x86_64/440.31/README/dynamicpowermanagement.html#KnownIssuesAndW6426e
++ */
++static void remove_extra_pci_functions(const struct device *device) {
++    fprintf(log_handle, "Applying workaround for power management\n");
++    for (unsigned int fn_nr = 1; fn_nr <= 3; ++fn_nr) {
++        _cleanup_fclose_ FILE *file = NULL;
++        char pci_fn[PATH_MAX];
++
++        snprintf(pci_fn, sizeof(pci_fn),
++                 "/sys/bus/pci/devices/%04x:%02x:%02x.%x/remove",
++                 (unsigned int)device->domain,
++                 (unsigned int)device->bus,
++                 (unsigned int)device->dev,
++                 fn_nr);
++
++        file = fopen(pci_fn, "w");
++        if (!file)
++            continue;
++
++        fputs("1", file);
++        fflush(file);
++    }
++}
++
+ static bool manage_power_management(const struct device *device, bool enabled) {
+     _cleanup_fclose_ FILE *file = NULL;
+     char pci_device_path[PATH_MAX];
+@@ -1670,6 +1696,7 @@
+         /* Remove the OutputClass */
+         remove_prime_outputclass();
+         enable_power_management(device);
++        remove_extra_pci_functions(device);
+         if (!is_module_loaded("nvidia"))
+             load_module("nvidia");
+     }

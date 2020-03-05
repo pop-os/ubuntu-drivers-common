@@ -39,7 +39,7 @@ def create_parser():
     command_help = 'Available commands:'
     for c in globals():
         if c.startswith('command_'):
-            name = c.split('_', 1)[1]
+            name = c.split('_', 1)[1].replace('_','-')
             commands.append(name)
             if not fnmatch.filter(deprecated, name):
                 command_help += '\n   %s: %s' % (name, globals()[c].__doc__)
@@ -60,17 +60,41 @@ def create_parser():
 
     parser.add_argument('--free-only', action="store_true", default=False,
                         help='Only consider free packages')
+    parser.add_argument('--no-oem', action="store_false", default=True,
+                        dest='install_oem_meta',
+                        help='Do not include OEM enablement packages (these enable an external archive)')
     return parser
 
 def command_list(args):
     '''Show all driver packages which apply to the current system.'''
 
     packages = UbuntuDrivers.detect.system_driver_packages(
-        sys_path=sys_path, freeonly=args.free_only)
+        sys_path=sys_path, freeonly=args.free_only, include_oem=args.install_oem_meta)
+
     if packages:
         print('\n'.join(packages))
 
     return 0
+
+def command_list_oem(args):
+    '''Show all OEM enablement packages which apply to this system'''
+
+    if not args.install_oem_meta:
+        return 0
+
+    packages = UbuntuDrivers.detect.system_device_specific_metapackages(
+        sys_path=sys_path, include_oem=args.install_oem_meta)
+
+    if packages:
+        print('\n'.join(packages))
+
+        if args.package_list:
+            with open(args.package_list, 'a') as f:
+                f.write('\n'.join(packages))
+                f.write('\n')
+
+    return 0
+
 
 def list_gpgpu(args):
     '''Show all GPGPU driver packages which apply to the current system.'''
@@ -119,7 +143,8 @@ def command_install(args):
     cache = apt.Cache()
 
     packages = UbuntuDrivers.detect.system_driver_packages(
-        cache, sys_path, freeonly=args.free_only)
+        cache, sys_path, freeonly=args.free_only,
+        include_oem=args.install_oem_meta)
     packages = UbuntuDrivers.detect.auto_install_filter(packages)
     if not packages:
         print('No drivers found for installation.')
@@ -138,13 +163,41 @@ def command_install(args):
     ret = subprocess.call(['apt-get', 'install', '-o',
         'DPkg::options::=--force-confnew', '-y'] + to_install)
 
+    oem_meta_to_install = fnmatch.filter(to_install, 'oem-*-meta')
+
     # create package list
     if ret == 0 and args.package_list:
         with open(args.package_list, 'a') as f:
             f.write('\n'.join(to_install))
             f.write('\n')
+    elif ret != 0:
+        return ret
+
+    for package_to_install in oem_meta_to_install:
+        sources_list_path = os.path.join(os.path.sep,
+                                         'etc',
+                                         'apt',
+                                         'sources.list.d',
+                                         F'{package_to_install}.list')
+
+        update_ret = subprocess.call(['apt',
+                                      '-o', F'Dir::Etc::SourceList={sources_list_path}',
+                                      '-o', 'Dir::Etc::SourceParts=/dev/null',
+                                      '--no-list-cleanup',
+                                      'update'])
+
+        if update_ret != 0:
+            return update_ret
+
+    # All updates completed successfully, now let's upgrade the packages
+    if oem_meta_to_install:
+        ret = subprocess.call(['apt',
+                               'install',
+                               '-o', 'DPkg::Options::=--force-confnew',
+                               '-y'] + oem_meta_to_install)
 
     return ret
+
 
 def command_autoinstall(args):
     '''Install drivers that are appropriate for automatic installation. [DEPRECATED]'''
@@ -212,7 +265,7 @@ def command_debug(args):
     aliases = UbuntuDrivers.detect.system_modaliases()
     cache = apt.Cache()
     packages = UbuntuDrivers.detect.system_driver_packages(
-        cache, sys_path, freeonly=args.free_only)
+        cache, sys_path, freeonly=args.free_only, include_oem=args.install_oem_meta)
     auto_packages = UbuntuDrivers.detect.auto_install_filter(packages)
 
     print('=== modaliases in the system ===')
@@ -270,5 +323,5 @@ else:
         parser.print_help()
         sys.exit(1)
     # run the function corresponding to the specified command
-    command = globals()['command_' + args.command]
+    command = globals()['command_' + args.command.replace('-', '_')]
     sys.exit(command(args))

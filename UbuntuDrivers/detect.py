@@ -107,16 +107,16 @@ def _apt_cache_modalias_map(apt_cache):
     '''
     result = {}
     for package in apt_cache:
-        # skip foreign architectures, we usually only want native
-        # driver packages
-        if (not package.candidate or
-                package.candidate.architecture not in ('all', system_architecture)):
-            continue
-
         # skip packages without a modalias field
         try:
             m = package.candidate.record['Modaliases']
         except (KeyError, AttributeError, UnicodeDecodeError):
+            continue
+
+        # skip foreign architectures, we usually only want native
+        # driver packages
+        if (not package.candidate or
+                package.candidate.architecture not in ('all', system_architecture)):
             continue
 
         # skip incompatible video drivers
@@ -263,7 +263,7 @@ def _get_db_name(syspath, alias):
     return (vendor, model)
 
 
-def system_driver_packages(apt_cache=None, sys_path=None, freeonly=False):
+def system_driver_packages(apt_cache=None, sys_path=None, freeonly=False, include_oem=True):
     '''Get driver packages that are available for the system.
 
     This calls system_modaliases() to determine the system's hardware and then
@@ -308,6 +308,8 @@ def system_driver_packages(apt_cache=None, sys_path=None, freeonly=False):
     for alias, syspath in modaliases.items():
         for p in packages_for_modalias(apt_cache, alias):
             if freeonly and not _is_package_free(p):
+                continue
+            if not include_oem and fnmatch.fnmatch(p.name, 'oem-*-meta'):
                 continue
             packages[p.name] = {
                     'modalias': alias,
@@ -390,6 +392,62 @@ def _get_headless_no_dkms_metapackage(pkg, apt_cache):
         pass
 
     return metapackage
+
+
+def system_device_specific_metapackages(apt_cache=None, sys_path=None, include_oem=True):
+    '''Get device specific metapackages for this system
+
+    This calls system_modaliases() to determine the system's hardware and then
+    queries apt about which packages provide hardware enablement support for
+    those.
+
+    If you already have an apt.Cache() object, you should pass it as an
+    argument for efficiency. If not given, this function creates a temporary
+    one by itself.
+
+    Return a dictionary which maps package names to information about them:
+
+      driver_package → {'modalias': 'pci:...', ...}
+
+    Available information keys are:
+      'modalias':    Modalias for the device that needs this driver (not for
+                     drivers from detect plugins)
+      'syspath':     sysfs directory for the device that needs this driver
+                     (not for drivers from detect plugins)
+      'plugin':      Name of plugin that detected this package (only for
+                     drivers from detect plugins)
+      'free':        Boolean flag whether driver is free, i. e. in the "main"
+                     or "universe" component.
+      'from_distro': Boolean flag whether the driver is shipped by the distro;
+                     if not, it comes from a (potentially less tested/trusted)
+                     third party source.
+      'vendor':      Human readable vendor name, if available.
+      'model':       Human readable product name, if available.
+      'recommended': Always True; we always recommend you install these
+                     packages.
+    '''
+    if not include_oem:
+        return {}
+
+    modaliases = system_modaliases(sys_path)
+
+    if not apt_cache:
+        apt_cache = apt.Cache()
+
+    packages = {}
+    for alias, syspath in modaliases.items():
+        for p in packages_for_modalias(apt_cache, alias):
+            if not fnmatch.fnmatch(p.name, 'oem-*-meta'):
+                continue
+            packages[p.name] = {
+                    'modalias': alias,
+                    'syspath': syspath,
+                    'free': _is_package_free(p),
+                    'from_distro': _is_package_from_distro(p),
+                    'recommended': True,
+                }
+
+    return packages
 
 
 def system_gpgpu_driver_packages(apt_cache=None, sys_path=None):
@@ -562,7 +620,7 @@ def auto_install_filter(packages):
     '''
     # any package which matches any of those globs will be accepted
     whitelist = ['bcmwl*', 'pvr-omap*', 'virtualbox-guest*', 'nvidia-*',
-                 'open-vm-tools*']
+                 'open-vm-tools*', 'oem-*-meta']
     allow = []
     for pattern in whitelist:
         allow.extend(fnmatch.filter(packages, pattern))

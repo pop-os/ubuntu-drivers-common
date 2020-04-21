@@ -903,6 +903,28 @@ def get_linux(apt_cache):
     return kernel_detection.get_linux_metapackage()
 
 
+def find_reverse_dependencies(apt_cache, package, prefix):
+    '''Return the reverse dependencies for a package'''
+    # prefix to restrict the searching
+    # package we want reverse dependencies for
+    deps = set()
+    for pkg in apt_cache:
+        if pkg.name.startswith(prefix):
+            dependencies = []
+            if pkg.candidate:
+                dependencies.extend(pkg.candidate.dependencies)
+            if pkg.installed:
+                dependencies.extend(pkg.installed.dependencies)
+
+            for ordep in dependencies:
+                for dep in ordep:
+                    if dep.rawtype != 'Depends':
+                        continue
+                    if dep.name == package:
+                        deps.add(pkg.name)
+    return list(deps)
+
+
 def get_linux_image_from_meta(apt_cache, pkg):
     if apt_cache[pkg].candidate:
         record = apt_cache[pkg].candidate.record
@@ -925,6 +947,7 @@ def get_linux_modules_metapackage(apt_cache, candidate):
     assert candidate is not None
     metapackage = None
     linux_flavour = ''
+    linux_modules_match = ''
 
     if 'nvidia' not in candidate:
         logging.debug('Non NVIDIA linux-modules packages are not supported at this time: %s. Skipping', candidate)
@@ -935,7 +958,7 @@ def get_linux_modules_metapackage(apt_cache, candidate):
     linux_image = get_linux_image_from_meta(apt_cache, linux_image_meta)
 
     if linux_image:
-        linux_flavour = linux_image.split('-')[-1]
+        linux_flavour = linux_image.replace('linux-image-', '')
     else:
         logging.error('No linux-image can be found for %s. Skipping.', candidate)
         return metapackage
@@ -966,15 +989,24 @@ def get_linux_modules_metapackage(apt_cache, candidate):
             if (abi_specific.candidate and
                     abi_specific.candidate.architecture in ('all', system_architecture)):
                 logging.debug('Found ABI compatible %s' % (linux_modules_abi_candidate))
-                metapackage = linux_modules_candidate
+                linux_modules_match = linux_modules_candidate
     except KeyError:
         logging.debug('No "%s" can be found.', linux_modules_candidate)
         pass
 
     # Add an extra layer of paranoia, and check the availability
     # of modules with the correct ABI
-    if metapackage:
-        return metapackage
+    if linux_modules_match:
+        # Look for the metapackage in the reverse
+        # dependencies
+        reverse_deps = find_reverse_dependencies(apt_cache, linux_modules_match, 'linux-modules-nvidia-')
+        pick = ''
+        for dep in reverse_deps:
+            if dep > pick:
+                pick = dep
+        if pick:
+            metapackage = pick
+            return metapackage
 
     # If no linux-modules-nvidia package is available for the current kernel
     # we should install the relevant DKMS package

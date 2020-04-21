@@ -57,22 +57,36 @@ class KernelDetection(object):
     def _find_reverse_dependencies(self, package, prefix):
         # prefix to restrict the searching
         # package we want reverse dependencies for
-        deps = []
+        deps = set()
         for pkg in self.apt_cache:
             if (pkg.name.startswith(prefix) and
                     'extra' not in pkg.name and
-                    self.apt_cache[pkg.name].is_installed or
-                    self.apt_cache[pkg.name].marked_install):
+                    pkg.is_installed or
+                    pkg.marked_install):
 
-                try:
-                    dependencies = self.apt_cache[pkg.name].candidate.\
-                             record['Depends']
-                except KeyError:
-                    continue
+                dependencies = []
+                if pkg.candidate:
+                    dependencies.extend(pkg.candidate.dependencies)
+                if pkg.installed:
+                    dependencies.extend(pkg.installed.dependencies)
 
-                if package in dependencies:
-                    deps.append(pkg.name)
-        return deps
+                for ordep in dependencies:
+                    for dep in ordep:
+                        if dep.rawtype != 'Depends':
+                            continue
+                        if dep.name == package:
+                            deps.add(pkg.name)
+
+        return list(deps)
+
+    def _get_linux_flavour(self, candidates, image):
+        pattern = re.compile(r'linux-image-([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-(.+)')
+        match = pattern.match(image)
+        flavour = ''
+        if match:
+            flavour = match.group(3)
+
+        return flavour
 
     def _get_linux_metapackage(self, target):
         '''Get the linux headers, linux-image or linux metapackage'''
@@ -115,19 +129,30 @@ class KernelDetection(object):
             if reverse_dependencies:
                 # This should be something like linux-image-$flavour
                 # or linux-headers-$flavour
+                metapackage = ''
                 for candidate in reverse_dependencies:
-                    if candidate.startswith(prefix):
+                    if (candidate.startswith(prefix) and
+                            candidate.replace(prefix, '') > metapackage.replace(prefix, '')):
                         metapackage = candidate
-                        break
+
                 # if we are looking for headers, then we are good
                 if target == 'meta':
                     # Let's get the metapackage
                     reverse_dependencies = self._find_reverse_dependencies(metapackage, 'linux-')
-
                     if reverse_dependencies:
+                        flavour = self._get_linux_flavour(reverse_dependencies, target_package)
+                        linux_meta = ''
+                        for meta in reverse_dependencies:
+                            # For example linux-generic-hwe-20.04
+                            if meta.startswith('linux-%s-' % (flavour)):
+                                linux_meta = meta
+                                break
                         # This should be something like linux-$flavour
-                        metapackage = reverse_dependencies[0]
-
+                        if not linux_meta:
+                            # Try the 1st reverse dependency
+                            metapackage = reverse_dependencies[0]
+                        else:
+                            metapackage = linux_meta
         return metapackage
 
     def get_linux_headers_metapackage(self):

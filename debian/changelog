@@ -1,3 +1,11 @@
+ubuntu-drivers-common (1:0.8.1pop1) focal; urgency=medium
+
+  [ Tim Crawford ]
+  * gpu-manager.c
+    - Allow offloading on AMD+NVIDIA systems
+
+ -- Tim Crawford <tcrawford@system76.com>  Tue 12 May 2020 12:38:07 PM MDT
+
 ubuntu-drivers-common (1:0.8.1) focal; urgency=medium
 
   [ Alberto Milone ]

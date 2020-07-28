@@ -1,3 +1,11 @@
+ubuntu-drivers-common (1:0.8.4~0.20.04.3) focal; urgency=medium
+
+  * ubuntu-drivers:
+    - Fix failure when using the deprecated "autoinstall"
+      argument (LP: #1889181).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Tue, 28 Jul 2020 10:42:55 +0200
+
 ubuntu-drivers-common (1:0.8.4~0.20.04.2) focal; urgency=medium
 
   * gpu-manager.c:
@@ -18,7 +26,7 @@ ubuntu-drivers-common (1:0.8.4~0.20.04.1) focal; urgency=medium
     - Do not print an error when linux-modules cannot
       be found. This prevents the ubuntu-drivers tools
       from printing misleading warnings, as seen in
-      LP:#1882402.
+      LP: #1882402.
     - Add support for the new -server NVIDIA drivers
       (LP: #1881586).
   * debian/control:

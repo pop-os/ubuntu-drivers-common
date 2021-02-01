@@ -157,9 +157,14 @@ def command_install(args):
             # See if runtimepm is supported
             if packages[p].get('runtimepm'):
                 # Create a file for nvidia-prime
-                pm_fd = open('/run/nvidia_runtimepm_supported', 'w')
-                pm_fd.write('\n')
-                pm_fd.close()
+                try:
+                    pm_fd = open('/run/nvidia_runtimepm_supported', 'w')
+                    pm_fd.write('\n')
+                    pm_fd.close()
+                except PermissionError:
+                    # No need to error out here, since package
+                    # installation will fail
+                    pass
             # Add the matching linux modules package when available
             try:
                 modules_package = UbuntuDrivers.detect.get_linux_modules_metapackage(cache, p)
@@ -453,9 +458,13 @@ def list(config, **kwargs):
 
 @greet.command()
 @click.argument('list-oem', nargs=-1)
+@click.option('--package-list', nargs=1, metavar='PATH', help='Create file with a list of the available packages')
 @pass_config
 def list_oem(config, **kwargs):
     '''Show all OEM enablement packages which apply to this system'''
+    if kwargs.get('package_list'):
+        config.package_list = ''.join(kwargs.get('package_list'))
+
     command_list_oem(config)
 
 @greet.command()

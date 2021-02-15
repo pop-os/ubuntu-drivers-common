@@ -1,3 +1,10 @@
+ubuntu-drivers-common (1:0.8.6.5pop0) focal; urgency=medium
+
+  * gpu-manager.c:
+    - Don't force unloading of NVIDIA drivers
+
+ -- Tim Crawford <tcrawford@system76.com>  Mon, 15 Feb 2021 08:58:22 -0700
+
 ubuntu-drivers-common (1:0.8.6.5~0.20.04.1) focal; urgency=medium
 
   * tests/test_ubuntu_drivers.py:

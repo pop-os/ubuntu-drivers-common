@@ -1,3 +1,10 @@
+ubuntu-drivers-common (1:0.8.6.3pop0) groovy; urgency=medium
+
+  * gpu-manager.c:
+    - Don't force unloading of NVIDIA drivers
+
+ -- Tim Crawford <tcrawford@system76.com>  Mon, 15 Feb 2021 09:12:49 -0700
+
 ubuntu-drivers-common (1:0.8.6.3~0.20.10.1) groovy; urgency=medium
 
   * UbuntuDrivers/detect.py,

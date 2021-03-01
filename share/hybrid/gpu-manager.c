@@ -2029,7 +2029,7 @@ unload_again:
 
         // XXX: HACK: Give the GPU time to initialize
         fprintf(log_handle, "Giving GPU time to initialize...\n");
-        sleep(1);
+        sleep(5);
 
         /* Set power control to "auto" to save power */
         enable_power_management(device);

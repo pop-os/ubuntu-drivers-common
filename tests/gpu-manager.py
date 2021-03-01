@@ -2122,8 +2122,8 @@ class GpuManagerTest(unittest.TestCase):
 
         self.assertFalse(gpu_test.has_selected_driver)
 
-        # Check that the xorg.conf.d file was not created
-        self.assertFalse(gpu_test.has_created_xorg_conf_d)
+        # Check that the xorg.conf.d file was created
+        self.assertTrue(gpu_test.has_created_xorg_conf_d)
 
         # No further action is required
         self.assertTrue(gpu_test.has_not_acted)
@@ -2408,8 +2408,8 @@ class GpuManagerTest(unittest.TestCase):
 
         self.assertFalse(gpu_test.has_selected_driver)
 
-        # Check that the xorg.conf.d file was not created
-        self.assertFalse(gpu_test.has_created_xorg_conf_d)
+        # Check that the xorg.conf.d file was created
+        self.assertTrue(gpu_test.has_created_xorg_conf_d)
 
         # No further action is required
         self.assertTrue(gpu_test.has_not_acted)
@@ -2492,8 +2492,8 @@ class GpuManagerTest(unittest.TestCase):
         # Select PRIME
         self.assertFalse(gpu_test.has_selected_driver)
 
-        # Check that the xorg.conf.d file was not created
-        self.assertFalse(gpu_test.has_created_xorg_conf_d)
+        # Check that the xorg.conf.d file was created
+        self.assertTrue(gpu_test.has_created_xorg_conf_d)
 
         # No further action is required
         self.assertTrue(gpu_test.has_not_acted)
@@ -2842,8 +2842,8 @@ class GpuManagerTest(unittest.TestCase):
 
         self.assertFalse(gpu_test.has_selected_driver)
 
-        # Check that the xorg.conf.d file was created
-        self.assertTrue(gpu_test.has_created_xorg_conf_d)
+        # Check that the xorg.conf.d file was not created
+        self.assertFalse(gpu_test.has_created_xorg_conf_d)
 
         # No further action is required
         self.assertTrue(gpu_test.has_not_acted)

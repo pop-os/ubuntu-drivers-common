@@ -1,3 +1,15 @@
+ubuntu-drivers-common (1:0.8.8) hirsute; urgency=medium
+
+  [ Michael Hudson-Doyle ]
+  * Drop dependency on alsa-utils as we want to start using ubuntu-drivers in
+    the server installer but do not want alsa-utils there. The code using
+    aplay to detect certain kinds of modem will fail to detect them if aplay
+    is not installed but will not crash. As alsa-utils is in the
+    desktop-common seed there should be no loss of functionality anywhere
+    ubuntu-drivers is used today.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Wed, 31 Mar 2021 13:43:48 +0200
+
 ubuntu-drivers-common (1:0.8.7) hirsute; urgency=medium
 
   * ubuntu-drivers:

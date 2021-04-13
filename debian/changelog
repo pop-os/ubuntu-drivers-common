@@ -1,3 +1,11 @@
+ubuntu-drivers-common (1:0.8.9.1) hirsute; urgency=medium
+
+  * debian/tests/control:
+    - Add dependency on alsa-utils, since the autopkgtest requires it
+      for the sl-modem detection plugin.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Tue, 13 Apr 2021 13:00:14 +0200
+
 ubuntu-drivers-common (1:0.8.9) hirsute; urgency=medium
 
   [ Michael Hudson-Doyle ]

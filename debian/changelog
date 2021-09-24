@@ -1,3 +1,11 @@
+ubuntu-drivers-common (1:0.9.2.1pop0) impish; urgency=medium
+
+  * gpu-manager.c
+    - Don't force unloading of NVIDIA drivers
+    - Delay enabling power management so dGPU initializes
+
+ -- Tim Crawford <tcrawford@system76.com>  Fri, 24 Sep 2021 15:46:30 -0600
+
 ubuntu-drivers-common (1:0.9.2.1) impish; urgency=medium
 
   * UbuntuDrivers/detect.py:

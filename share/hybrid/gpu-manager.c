@@ -2079,6 +2079,11 @@ static bool enable_prime(const char *prime_settings,
         create_offload_serverlayout();
         /* Remove the OutputClass */
         remove_prime_outputclass();
+
+        // XXX: HACK: Give the GPU time to initialize
+        fprintf(log_handle, "Giving GPU time to initialize...\n");
+        sleep(5);
+
         enable_power_management(device);
         if (!is_module_loaded("nvidia"))
             load_module("nvidia");
@@ -2114,7 +2119,7 @@ unload_again:
 
         // XXX: HACK: Give the GPU time to initialize
         fprintf(log_handle, "Giving GPU time to initialize...\n");
-        sleep(1);
+        sleep(5);
 
         /* Set power control to "auto" to save power */
         enable_power_management(device);

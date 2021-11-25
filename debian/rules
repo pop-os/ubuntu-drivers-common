@@ -24,15 +24,6 @@ override_dh_auto_clean:
 override_dh_install:
 	dh_install --fail-missing -Xlib/systemd -Xsbin -Xlib/udev
 
-	# on architectures where we build gpu-manager, install the systemd unit,
-	# the udev rule, and the script for gpu detection
-	if [ -d debian/tmp/lib/systemd ]; then \
-		dh_install -p ubuntu-drivers-common lib/systemd; \
-		dh_systemd_enable -p ubuntu-drivers-common; \
-		dh_install -p ubuntu-drivers-common lib/udev/rules.d; \
-		dh_install -p ubuntu-drivers-common sbin; \
-	fi
-
 	# build dh_modaliases manpage
 	mkdir -p debian/dh-modaliases/usr/share/man/man1
 	pod2man -c Debhelper -r "$(DEB_VERSION)" debhelper/dh_modaliases debian/dh-modaliases/usr/share/man/man1/dh_modaliases.1
@@ -41,12 +32,9 @@ override_dh_python3:
 	dh_python3 --shebang=/usr/bin/python3
 
 override_dh_clean:
-	rm -f share/hybrid/hybrid-detect
-	rm -f share/hybrid/gpu-manager
 	rm -f quirksreader_test*.txt
 	rm -rf build
 	rm -rf *.egg-info
 	rm -f debian/ubuntu-drivers-common.maintscript
 	find $(CURDIR) -name "__pycache__" -exec rm -rf "{}" \;
-	make -C share/hybrid clean
 	dh_clean

@@ -156,8 +156,6 @@ struct pme_dev {
 
 
 static bool is_file(char *file);
-static bool is_dir(char *directory);
-static bool is_dir_empty(char *directory);
 static bool is_link(char *file);
 static bool is_module_loaded(const char *module);
 static bool get_nvidia_driver_version(int *major, int *minor, int *extra);
@@ -353,23 +351,6 @@ static bool pci_device_is_boot_vga(struct pci_dev *info) {
 }
 
 
-/* Trim string in place */
-static void trim(char *str) {
-    char *pointer = str;
-    int len = strlen(pointer);
-
-    while(isspace(pointer[len - 1]))
-        pointer[--len] = 0;
-
-    while(* pointer && isspace(* pointer)) {
-        ++pointer;
-        --len;
-    }
-
-    memmove(str, pointer, len + 1);
-}
-
-
 static char* get_system_architecture() {
     struct utsname buffer;
     char * arch = NULL;
@@ -525,12 +506,6 @@ static bool load_module(const char *module) {
 }
 
 
-/* Unload a kernel module */
-static bool unload_module(const char *module) {
-    return (act_upon_module_with_params(module, 0, NULL));
-}
-
-
 /* Get the first match from the output of a command */
 static char* get_output(const char *command, const char *pattern, const char *ignore) {
     int len;
@@ -648,20 +623,6 @@ static bool find_string_in_file(const char *path, const char *pattern) {
 }
 
 
-static bool is_file_empty(const char *file) {
-    struct stat stbuf;
-
-    if (stat(file, &stbuf) == -1) {
-        fprintf(log_handle, "can't access %s\n", file);
-        return false;
-    }
-    if ((stbuf.st_mode & S_IFMT) && ! stbuf.st_size)
-        return true;
-
-    return false;
-}
-
-
 static bool has_cmdline_option(const char *option)
 {
     return (find_string_in_file("/proc/cmdline", option));
@@ -692,43 +653,6 @@ static prime_intel_drv get_prime_intel_driver() {
     }
 
     return driver;
-}
-
-
-static bool copy_file(const char *src_path, const char *dst_path)
-{
-    _cleanup_fclose_ FILE *src = NULL;
-    _cleanup_fclose_ FILE *dst = NULL;
-    int src_fd, dst_fd;
-    int n = 0;
-    char buf[BUFSIZ];
-
-    src = fopen(src_path, "r");
-    if (src == NULL) {
-        fprintf(log_handle, "error: can't open %s for reading\n", src_path);
-        return false;
-    }
-
-    dst = fopen(dst_path, "w");
-    if (dst == NULL) {
-        fprintf(log_handle, "error: can't open %s for writing.\n",
-                dst_path);
-        return false;
-    }
-
-    src_fd = fileno(src);
-    dst_fd = fileno(dst);
-
-    fprintf(log_handle, "copying %s to %s...\n", src_path, dst_path);
-
-    while ((n = read(src_fd, buf, BUFSIZ)) > 0)
-        if (write(dst_fd, buf, n) != n) {
-            fprintf(log_handle, "write error on file %s\n", dst_path);
-            return false;
-        }
-
-    fprintf(log_handle, "%s was copied successfully to %s\n", src_path, dst_path);
-    return true;
 }
 
 
@@ -1171,37 +1095,6 @@ static bool is_file(char *file) {
         return true;
 
     return false;
-}
-
-
-static bool is_dir(char *directory) {
-    struct stat stbuf;
-
-    if (stat(directory, &stbuf) == -1) {
-        fprintf(log_handle, "Error: can't access %s\n", directory);
-        return false;
-    }
-    if ((stbuf.st_mode & S_IFMT) == S_IFDIR)
-        return true;
-    return false;
-}
-
-
-static bool is_dir_empty(char *directory) {
-    int n = 0;
-    struct dirent *d;
-    DIR *dir = opendir(directory);
-    if (dir == NULL)
-        return true;
-    while ((d = readdir(dir)) != NULL) {
-        if(++n > 2)
-        break;
-    }
-    closedir(dir);
-    if (n <= 2)
-        return true;
-    else
-        return false;
 }
 
 
@@ -1803,191 +1696,12 @@ static int remove_nvidia_runtime_config(void) {
     return -errno;
 }
 
-static bool unload_nvidia(void) {
-    unload_module("nvidia-drm");
-    unload_module("nvidia-uvm");
-    unload_module("nvidia-modeset");
-
-    return unload_module("nvidia");
-}
-
-static char* get_pid_by_name(const char *name) {
-    char command[100];
-    char *pid = NULL;
-
-    snprintf(command, sizeof(command),
-             "/bin/pidof %s",
-             name);
-    fprintf(log_handle, "Calling %s\n", command);
-    pid = get_output(command, NULL, NULL);
-
-    if (!pid) {
-        fprintf(log_handle, "Info: no PID found for %s.\n",
-                name);
-        return NULL;
-    }
-
-    return pid;
-}
-
-
-static long get_uid_of_pid(const char *pid) {
-    char path[PATH_MAX];
-
-    _cleanup_free_ char *line = NULL;
-    _cleanup_fclose_ FILE *file = NULL;
-    size_t len = 0;
-    size_t read;
-    char pattern[] = "Uid:";
-    long uid = -1;
-
-    snprintf(path, sizeof(path),
-             "/proc/%s/status",
-             pid);
-    fprintf(log_handle, "Opening %s\n", path);
-
-    file = fopen(path, "r");
-    if (file == NULL) {
-        fprintf(log_handle, "Error: can't open %s\n", path);
-        return -1;
-    }
-    while ((read = getline(&line, &len, file)) != -1) {
-        if (istrstr(line, pattern) != NULL) {
-            fprintf(log_handle, "found \"%s\"\n", line);
-            if (strncmp(line, "Uid:", 4) == 0) {
-                uid = strtol(line + 4, NULL, 10);
-                fprintf(log_handle, "Found %ld\n", uid);
-            }
-        }
-    }
-    return uid;
-}
-
-
-static char* get_user_from_uid(const long uid) {
-    size_t read;
-    char *token, *str;
-    char pattern[PATH_MAX];
-    char *user = NULL;
-    size_t len = 0;
-    _cleanup_free_ char *line = NULL;
-    _cleanup_fclose_ FILE *file = NULL;
-    _cleanup_free_ char *tofree = NULL;
-
-    snprintf(pattern, sizeof(pattern),
-             "%ld",
-             uid);
-    fprintf(log_handle, "Looking for %s\n", pattern);
-
-    file = fopen("/etc/passwd", "r");
-    if (file == NULL)
-         return NULL;
-    while ((read = getline(&line, &len, file)) != -1 && (user == NULL)) {
-        if (istrstr(line, pattern) != NULL) {
-            tofree = str = strdup(line);
-            /* Get the first result
-             * gdm:x:120:125:Gnome Display Manager:/var/lib/gdm3:/bin/false
-             */
-            while( (token = strsep(&str, ":")) != NULL ) {
-                user = strdup(token);
-                fprintf(log_handle, "USER: %s\n", user);
-                break;
-            }
-        }
-    }
-    return user;
-}
-
-
-/* Check a strings with pids, and find the gdm session */
-static long find_pid_main_session(const char *pid_str) {
-    _cleanup_free_ char *tofree = NULL;
-    _cleanup_free_ char *user = NULL;
-    long uid = -1;
-    char *token, *str;
-    long pid = -1;
-
-    tofree = str = strdup(pid_str);
-    while( (token = strsep(&str," ")) != NULL ) {
-        if ( (uid = get_uid_of_pid(token)) >= 0) {
-            fprintf(log_handle, "Found: %s %ld\n", token, uid);
-            /*look up the UID in /etc/passwd */
-            user = get_user_from_uid(uid);
-            fprintf(log_handle, "User: %s UID: %ld\n", user, uid);
-            if ((user != NULL) && (strcmp(user, "gdm") == 0)) {
-                pid = strtol(token, NULL, 10);
-                break;
-            }
-        }
-    }
-    return pid;
-}
-
-
-static long get_gdm_session_pid(const char* display_server) {
-    _cleanup_free_ char *pid_str = NULL;
-    long pid = -1;
-
-    pid_str = get_pid_by_name(display_server);
-    if (!pid_str) {
-        fprintf(log_handle, "INFO: no PID found for %s.\n",
-                display_server);
-        return -1;
-    }
-
-    fprintf(log_handle, "INFO: found PID(s) %s for %s.\n",
-                    pid_str, display_server);
-
-    pid = find_pid_main_session(pid_str);
-
-    fprintf(log_handle, "INFO: found PID %ld for Gdm main %s session.\n",
-            pid, display_server);
-
-    return pid;
-}
-
-
-/* Kill the main display session created by Gdm 3 */
-static bool kill_main_display_session (void) {
-    int i;
-    _cleanup_free_ char *final_pid = NULL;
-    char command[100];
-    char server[] = "Xwayland";
-    long pid = -1;
-    int status = 0;
-    /* try with Xwayland first */
-    char *servers[2] = {"Xwayland", "Xorg"};
-
-    if (!dry_run) {
-        for(i = 0; i < 2; i++) {
-            pid = get_gdm_session_pid(servers[i]);
-            if (pid <= 0)
-                fprintf(log_handle, "Info: no PID found for %s.\n", servers[i]);
-            else
-                break;
-        }
-        if (pid <= 0)
-            return false;
-
-        fprintf(log_handle, "Info: found PID(s) %ld for %s.\n",
-                pid, server);
-
-        /* Kill the session */
-        snprintf(command, sizeof(command), "kill -KILL %ld", pid);
-        fprintf(log_handle, "Calling %s\n", command);
-        status = system(command);
-    }
-    return (status == 0);
-}
-
 
 static bool enable_prime(const char *prime_settings,
                         const struct device *device,
                         struct device **devices,
                         int cards_n) {
     int major, minor, extra;
-    //bool status = false;
-    //int tries = 0;
     /* Check if prime_settings is available
      * File doesn't exist or empty
      */

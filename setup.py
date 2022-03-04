@@ -3,12 +3,15 @@
 from setuptools import setup
 
 import subprocess, glob, os.path
-import os
+import os, sys
 
 extra_data = []
 # Build hybrid-detect on x86
 if '86' in os.uname()[4]:
-    subprocess.check_call(["make", "-C", "share/hybrid", "all"])
+    if 'clean' in sys.argv:
+        subprocess.check_call(["make", "-C", "share/hybrid", "clean"])
+    else:
+        subprocess.check_call(["make", "-C", "share/hybrid", "all"])
     extra_data.append(("/usr/bin/", ["share/hybrid/gpu-manager"]))
     extra_data.append(("/lib/systemd/system/", ["share/hybrid/gpu-manager.service"]))
     extra_data.append(("/sbin/", ["share/hybrid/u-d-c-print-pci-ids"]))

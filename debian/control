@@ -36,7 +36,7 @@ Vcs-Browser: https://github.com/tseliot/ubuntu-drivers-common
 X-Python3-Version: >= 3.2
 
 Package: ubuntu-drivers-common
-Architecture: any
+Architecture: amd64
 Pre-Depends: dpkg (>= 1.15.7.2)
 Depends: ${python3:Depends},
  ${misc:Depends},
@@ -87,7 +87,7 @@ Description: debhelper extension for scanning kernel module aliases
 Package: nvidia-common
 Section: oldlibs
 Priority: extra
-Architecture: i386 amd64 armel armhf
+Architecture: amd64 armel armhf
 Depends: ubuntu-drivers-common, ${misc:Depends}
 Description: transitional package for ubuntu-drivers-common
  This is a transitional package for ubuntu-drivers-common. You can remove it
@@ -96,7 +96,7 @@ Description: transitional package for ubuntu-drivers-common
 Package: fglrx-pxpress
 Section: oldlibs
 Priority: extra
-Architecture: i386 amd64
+Architecture: amd64
 Depends: ubuntu-drivers-common, ${misc:Depends}
 Description: transitional package for ubuntu-drivers-common
  This is a transitional package for ubuntu-drivers-common. You can remove it

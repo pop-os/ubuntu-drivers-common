@@ -295,7 +295,7 @@ def _pkg_get_support(apt_cache, pkg):
         logging.debug('_pkg_get_support %s: package has no Support header, cannot determine support level', pkg.name)
         return None
 
-    if support not in ('NFB', 'LTSB', 'Legacy'):
+    if support not in ('PB', 'NFB', 'LTSB', 'Legacy'):
         logging.debug('_pkg_get_support %s: package has invalid Support %s'
                       'header, cannot determine support level', pkg.name, support)
         return None
@@ -1104,6 +1104,36 @@ def _cmp_gfx_alternatives(x, y):
         return -1
     if not x.endswith('-server') and y.endswith('-server'):
         return 1
+
+    preferred_support = ['PB', 'LTSB']
+
+    x_score = 0
+    y_score = 0
+
+    x_support = _pkg_support_from_cache(x)
+    y_support = _pkg_support_from_cache(y)
+
+    if x_support in preferred_support:
+        x_score += 100
+
+    if y_support in preferred_support:
+        y_score += 100
+
+    if x > y:
+        x_score += 1
+    elif x < y:
+        y_score += 1
+
+    if ((x_score >= 100) or (y_score >= 100)):
+        if x_score > y_score:
+            return 1
+        elif x_score < y_score:
+            return -1
+
+    if _pkg_support_from_cache(x) == 'PB' and _pkg_support_from_cache(y) != 'PB':
+        return 1
+    if _pkg_support_from_cache(x) != 'PB' and _pkg_support_from_cache(y) == 'PB':
+        return -1
     if _pkg_support_from_cache(x) == 'LTSB' and _pkg_support_from_cache(y) != 'LTSB':
         return 1
     if _pkg_support_from_cache(x) != 'LTSB' and _pkg_support_from_cache(y) == 'LTSB':
@@ -1134,6 +1164,11 @@ def _cmp_gfx_alternatives_gpgpu(x, y):
     if x.endswith('-server') and not y.endswith('-server'):
         return 1
     if not x.endswith('-server') and y.endswith('-server'):
+        return -1
+
+    if _pkg_support_from_cache(x) == 'PB' and _pkg_support_from_cache(y) != 'PB':
+        return 1
+    if _pkg_support_from_cache(x) != 'PB' and _pkg_support_from_cache(y) == 'PB':
         return -1
     if _pkg_support_from_cache(x) == 'LTSB' and _pkg_support_from_cache(y) != 'LTSB':
         return 1

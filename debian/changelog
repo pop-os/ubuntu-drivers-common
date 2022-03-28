@@ -1,12 +1,8 @@
 ubuntu-drivers-common (1:0.9.6.1pop0) jammy; urgency=medium
 
-  * gpu-manager.c
-    - Don't force unloading of NVIDIA drivers
-    - Delay enabling power management so dGPU initializes
-    - Don't set NVreg_DynamicPowerManagement
-    - Don't configure runtime power management
+  * Disable gpu-manager service
 
- -- Tim Crawford <tcrawford@system76.com>  Thu, 07 Apr 2022 08:00:28 -0600
+ -- Tim Crawford <tcrawford@system76.com>  Mon, 28 Mar 2022 12:22:17 -0600
 
 ubuntu-drivers-common (1:0.9.6.1) jammy; urgency=medium
 

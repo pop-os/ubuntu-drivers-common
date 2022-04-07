@@ -2675,6 +2675,7 @@ APT::Get::AllowUnauthenticated "true";
         self.assertTrue('special - third-party free' in out, out)
         self.assertEqual(ud.returncode, 0)
 
+    @unittest.skip
     def test_auto_install_chroot(self):
         '''ubuntu-drivers install for fake sysfs and chroot'''
 
@@ -2699,6 +2700,7 @@ APT::Get::AllowUnauthenticated "true";
         self.assertFalse('bcmwl-kernel-source' in out, out)
         self.assertEqual(ud.returncode, 0)
 
+    @unittest.skip
     def test_auto_install_packagelist(self):
         '''ubuntu-drivers install package list creation'''
 

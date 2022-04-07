@@ -2045,8 +2045,8 @@ static bool enable_prime(const char *prime_settings,
                         struct device **devices,
                         int cards_n) {
     int major, minor, extra;
-    bool status = false;
-    int tries = 0;
+    //bool status = false;
+    //int tries = 0;
     /* Check if prime_settings is available
      * File doesn't exist or empty
      */
@@ -2101,6 +2101,7 @@ prime_on_fallback:
         remove_prime_outputclass();
         remove_offload_serverlayout();
 
+#if 0
 unload_again:
         /* Unload the NVIDIA modules and enable pci power management */
         if (is_module_loaded("nvidia")) {
@@ -2122,6 +2123,8 @@ unload_again:
                 }
             }
         }
+#endif
+
         /* Set power control to "auto" to save power */
         enable_power_management(device);
     }

@@ -1790,26 +1790,6 @@ static bool create_runtime_file(const char *name) {
 }
 
 
-static bool create_nvidia_runtime_config(void) {
-    _cleanup_fclose_ FILE *file = NULL;
-    char path[] = "/lib/modprobe.d/nvidia-runtimepm.conf";
-
-    fprintf(log_handle, "Trying to create new file: %s\n",
-            path);
-
-    file = fopen(path, "w");
-    if (file == NULL) {
-        fprintf(log_handle, "I couldn't open %s for writing.\n",
-                path);
-        return false;
-    }
-    fprintf(file, "options nvidia \"NVreg_DynamicPowerManagement=0x02\"\n");
-    fflush(file);
-
-    return true;
-}
-
-
 static int remove_nvidia_runtime_config(void) {
     struct stat st;
     char path[] = "/lib/modprobe.d/nvidia-runtimepm.conf";
@@ -1852,9 +1832,8 @@ static bool manage_power_management(const struct device *device, bool enabled) {
 
 static void enable_power_management(const struct device *device) {
     manage_power_management(device, true);
-    if (nvidia_runtimepm_supported && ! nvidia_runtimepm_enabled) {
-        create_nvidia_runtime_config();
-    }
+    // system76-power handles setting DynamicPowerManagement.
+    remove_nvidia_runtime_config();
 }
 
 static void disable_power_management(const struct device *device) {

@@ -1804,43 +1804,6 @@ static int remove_nvidia_runtime_config(void) {
     return -errno;
 }
 
-
-static bool manage_power_management(const struct device *device, bool enabled) {
-    _cleanup_fclose_ FILE *file = NULL;
-    char pci_device_path[PATH_MAX];
-
-    snprintf(pci_device_path, sizeof(pci_device_path),
-             "/sys/bus/pci/devices/%04x:%02x:%02x.%x/power/control",
-             (unsigned int)device->domain,
-             (unsigned int)device->bus,
-             (unsigned int)device->dev,
-             (unsigned int)device->func);
-
-    fprintf(log_handle, "Setting power control to \"%s\" in %s\n", enabled ? "auto" : "on", pci_device_path);
-    file = fopen(pci_device_path, "w");
-    if (!file) {
-        fprintf(log_handle, "Error while opening %s\n", pci_device_path);
-        return false;
-    }
-    else {
-        fputs(enabled ? "auto\n" : "on\n", file);
-
-        fflush(file);
-        return true;
-    }
-}
-
-static void enable_power_management(const struct device *device) {
-    manage_power_management(device, true);
-    // system76-power handles setting DynamicPowerManagement.
-    remove_nvidia_runtime_config();
-}
-
-static void disable_power_management(const struct device *device) {
-    manage_power_management(device, false);
-    remove_nvidia_runtime_config();
-}
-
 static bool unload_nvidia(void) {
     unload_module("nvidia-drm");
     unload_module("nvidia-uvm");
@@ -2050,7 +2013,6 @@ prime_on_fallback:
         create_prime_outputclass();
         /* Remove the ServerLayout */
         remove_offload_serverlayout();
-        disable_power_management(device);
         if (!is_module_loaded("nvidia"))
             load_module("nvidia");
     }
@@ -2071,7 +2033,6 @@ prime_on_fallback:
         create_offload_serverlayout();
         /* Remove the OutputClass */
         remove_prime_outputclass();
-        enable_power_management(device);
         if (!is_module_loaded("nvidia"))
             load_module("nvidia");
     }
@@ -2079,38 +2040,10 @@ prime_on_fallback:
         /* Remove the OutputClass and ServerLayout */
         remove_prime_outputclass();
         remove_offload_serverlayout();
-
-#if 0
-unload_again:
-        /* Unload the NVIDIA modules and enable pci power management */
-        if (is_module_loaded("nvidia")) {
-            status = unload_nvidia();
-
-            if (!status && is_module_loaded("nvidia")) {
-                fprintf(log_handle, "Warning: failure to unload the nvidia modules.\n");
-                if (tries == 0) {
-                    fprintf(log_handle, "Info: killing X...\n");
-                    status = kill_main_display_session();
-                    if (status) {
-                        tries++;
-                        goto unload_again;
-                    }
-                }
-                else {
-                    fprintf(log_handle, "Error: giving up on unloading nvidia...\n");
-                    return false;
-                }
-            }
-        }
-#endif
-
-        // XXX: HACK: Give the GPU time to initialize
-        fprintf(log_handle, "Giving GPU time to initialize...\n");
-        sleep(1);
-
-        /* Set power control to "auto" to save power */
-        enable_power_management(device);
     }
+
+    // system76-power handles setting DynamicPowerManagement.
+    remove_nvidia_runtime_config();
 
     return true;
 }

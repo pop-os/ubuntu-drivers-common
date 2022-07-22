@@ -1,3 +1,9 @@
+ubuntu-drivers-common (1:0.9.6.1pop0) jammy; urgency=medium
+
+  * Disable gpu-manager service
+
+ -- Tim Crawford <tcrawford@system76.com>  Fri, 22 Jul 2022 16:05:22 -0600
+
 ubuntu-drivers-common (1:0.9.6.1) jammy; urgency=medium
 
   * UbuntuDrivers/detect.py:

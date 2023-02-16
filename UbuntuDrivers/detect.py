@@ -23,6 +23,62 @@ system_architecture = ''
 lookup_cache = {}
 
 
+class NvidiaPkgNameInfo(object):
+    '''Class to process NVIDIA package names'''
+    def __init__(self, pkg_name):
+        self._pkg_name = pkg_name
+        self._obsolete_name_scheme = False
+        self._server = False
+        self._open = False
+        self._major_ver = -1
+        self._flavour = ''
+        self.is_valid = False
+        self._process_name(self._pkg_name)
+
+    def _process_name(self, name):
+        if 'nvidia' not in name:
+            logging.debug('NvidiaPkgNameInfo: %s is not an NVIDIA package. Skipping', name)
+            return
+
+        pattern = re.compile('nvidia-([0-9]+)')
+        match = pattern.match(name)
+
+        # Obsolete naming such as nvidia-340
+        if match:
+            self._obsolete_name_scheme = True
+            self._major_ver = match.group(1)
+            self._flavour = self._major_ver
+            self.is_valid = True
+            return
+
+        # Recent naming such as nvidia-driver-525
+        pattern = re.compile('nvidia-driver-([0-9]+)(.*)')
+        match = pattern.match(name)
+
+        if match:
+            self._server = match.group(0).find('-server') != -1
+            self._open = match.group(0).find('-open') != -1
+            self._flavour = '%s%s%s' % (match.group(1),
+                                        '-server' if self._server else '',
+                                        '-open' if self._open else '')
+            self.is_valid = True
+
+    def has_obsolete_name_scheme(self):
+        return self._obsolete_name_scheme
+
+    def is_server(self):
+        return self._server
+
+    def is_open(self):
+        return self._open
+
+    def get_major_version(self):
+        return self._major_ver
+
+    def get_flavour(self):
+        return self._flavour
+
+
 def get_apt_arch():
     '''Cache system architecture'''
     global system_architecture
@@ -515,19 +571,16 @@ def _get_headless_no_dkms_metapackage(pkg, apt_cache):
     depcache = apt_pkg.DepCache(apt_cache)
     name = pkg.name
 
-    pattern = re.compile('nvidia-([0-9]+)')
-    match = pattern.match(name)
-    if match:
-        logging.debug('Legacy driver detected: %s. Skipping.', name)
+    nvidia_info = NvidiaPkgNameInfo(name)
+    if not nvidia_info.is_valid:
+        logging.debug('Unsupported driver detected: %s. Skipping' % name)
         return metapackage
 
-    pattern = re.compile('nvidia-driver-([0-9]+)(.*)')
-    match = pattern.match(name)
-    if not match:
-        logging.debug('No flavour can be found in %s. Skipping.', name)
+    if nvidia_info.has_obsolete_name_scheme():
+        logging.debug('Legacy driver detected: %s. Skipping.' % name)
         return metapackage
 
-    candidate_flavour = '%s%s' % (match.group(1), match.group(2))
+    candidate_flavour = nvidia_info.get_flavour()
     candidate = 'nvidia-headless-no-dkms-%s' % (candidate_flavour)
 
     try:
@@ -830,16 +883,10 @@ def nvidia_desktop_pre_installation_hook(to_install):
 
     # Enable KMS if nvidia >= 470
     for package_name in to_install:
-        if package_name.startswith('nvidia-driver-'):
-            try:
-                version = int(package_name.split('-')[-1])
-            except ValueError:
-                pass
-            finally:
-                with_nvidia_kms = version >= 470
-
-    if with_nvidia_kms:
-        set_nvidia_kms(1)
+        nvidia_info = NvidiaPkgNameInfo(package_name)
+        if nvidia_info.get_major_version() >= 470:
+            set_nvidia_kms(1)
+            return
 
 
 def nvidia_desktop_post_installation_hook():
@@ -1164,10 +1211,16 @@ def _cmp_gfx_alternatives(x, y):
 def _cmp_gfx_alternatives_gpgpu(x, y):
     '''Compare two graphics driver names in terms of preference. (server)
 
+    -open always sorts after non-open.
     -server always sorts before non-server.
     LTSB (Long Term Support Branch) always sorts before NFB (New Feature Branch).
     Legacy always sorts before Beta.
     '''
+    if x.endswith('-open') and not y.endswith('-open'):
+        return -1
+    if not x.endswith('-open') and y.endswith('-open'):
+        return 1
+
     if x.endswith('-server') and not y.endswith('-server'):
         return 1
     if not x.endswith('-server') and y.endswith('-server'):
@@ -1284,14 +1337,13 @@ def get_linux_modules_metapackage(apt_cache, candidate):
 
     depcache = apt_pkg.DepCache(apt_cache)
 
-    if 'nvidia' not in candidate:
-        logging.debug('Non NVIDIA linux-modules packages are not supported at this time: %s. Skipping', candidate)
+    nvidia_info = NvidiaPkgNameInfo(candidate)
+    if not nvidia_info.is_valid:
+        logging.debug('Non NVIDIA linux-modules packages are not supported at this time: %s. Skipping' % candidate)
         return metapackage
 
-    pattern = re.compile('nvidia-([0-9]+)')
-    match = pattern.match(candidate)
-    if match:
-        logging.debug('Legacy driver detected: %s. Skipping.', candidate)
+    if nvidia_info.has_obsolete_name_scheme():
+        logging.debug('Legacy driver detected: %s. Skipping.' % candidate)
         return metapackage
 
     linux_image_meta = get_linux_image(apt_cache)
@@ -1301,16 +1353,10 @@ def get_linux_modules_metapackage(apt_cache, candidate):
     if linux_image:
         linux_flavour = linux_image.replace('linux-image-', '')
     else:
-        logging.debug('No linux-image can be found for %s. Skipping.', candidate)
+        logging.debug('No linux-image can be found for %s. Skipping.' % candidate)
         return metapackage
 
-    pattern = re.compile('nvidia-.*-([0-9]+)(.*)')
-    match = pattern.match(candidate)
-    if not match:
-        logging.debug('No flavour can be found in %s. Skipping.', candidate)
-        return metapackage
-
-    candidate_flavour = '%s%s' % (match.group(1), match.group(2))
+    candidate_flavour = nvidia_info.get_flavour()
     linux_modules_candidate = 'linux-modules-nvidia-%s-%s' % (candidate_flavour, linux_flavour)
 
     try:

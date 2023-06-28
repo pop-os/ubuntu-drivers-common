@@ -1,3 +1,19 @@
+ubuntu-drivers-common (1:0.9.6.2~0.22.04.5) jammy; urgency=medium
+
+  [ Jeremy Szu ]
+  * README, README.md,
+    UbuntuDrivers/detect.py,
+    tests/test_ubuntu_drivers.py:
+    - Let OEM images locally extend the NVIDIA driver
+      supported PCI IDs for cutting edge silicons by specifying
+      related information in /etc/custom_supported_gpus.json file.
+      (LP: #1990341)
+    - Fix pkg.candidate.record retired from apt_pkg library
+    - Support autopkgtest for force install Nvidia and update
+      related section in README.
+
+ -- Dirk Su <dirk.su@canonical.com>  Wed, 28 Jun 2023 10:16:13 +0800
+
 ubuntu-drivers-common (1:0.9.6.2~0.22.04.4) jammy; urgency=medium
 
   * ubuntu-drivers:

@@ -1,3 +1,10 @@
+ubuntu-drivers-common (1:0.9.6.2~0.22.04.6) jammy; urgency=medium
+
+  * UbuntuDrivers/detect.py:
+    - Skip modalias checking if id in force install list
+
+ -- Dirk Su <dirk.su@canonical.com>  Fri, 15 Sep 2023 16:59:17 +0800
+
 ubuntu-drivers-common (1:0.9.6.2~0.22.04.5) jammy; urgency=medium
 
   [ Jeremy Szu ]
